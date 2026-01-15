@@ -1,12 +1,42 @@
 // @ts-nocheck
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
-import { CheckCircle, ArrowRight } from 'lucide-react';
+import { CheckCircle, ArrowRight, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { createPageUrl } from '@/utils';
+import { base44 } from '@/api/base44Client';
+import { useQuery } from '@tanstack/react-query';
 
 export default function SubscriptionSuccess() {
+  const [searchParams] = useSearchParams();
+  const [user, setUser] = useState(null);
+
+  useEffect(() => {
+    const loadUser = async () => {
+      try {
+        const currentUser = await base44.auth.me();
+        setUser(currentUser);
+      } catch (err) {
+        // User not logged in - still show success page
+      }
+    };
+    loadUser();
+  }, []);
+
+  // Check subscription status
+  const { data: subscription, isLoading } = useQuery({
+    queryKey: ['userSubscription', user?.email],
+    queryFn: async () => {
+      if (!user) return null;
+      const subs = await base44.entities.UserSubscription.filter({
+        user_email: user.email
+      });
+      return subs[0] || null;
+    },
+    enabled: !!user
+  });
+
   useEffect(() => {
     // Confetti effect
     const duration = 3 * 1000;
@@ -40,6 +70,14 @@ export default function SubscriptionSuccess() {
     return () => clearInterval(interval);
   }, []);
 
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-violet-50 via-white to-rose-50 flex items-center justify-center">
+        <Loader2 className="w-8 h-8 text-violet-500 animate-spin" />
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-violet-50 via-white to-rose-50 flex items-center justify-center px-4">
       <motion.div
@@ -67,13 +105,24 @@ export default function SubscriptionSuccess() {
         </motion.h1>
 
         <motion.p
-          className="text-lg text-slate-600 mb-8"
+          className="text-lg text-slate-600 mb-4"
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.4 }}
         >
           Your subscription is now active. Enjoy unlimited access to all features!
         </motion.p>
+
+        {subscription?.end_date && (
+          <motion.p
+            className="text-sm text-slate-500 mb-8"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.45 }}
+          >
+            Valid until: {new Date(subscription.end_date).toLocaleDateString()}
+          </motion.p>
+        )}
 
         <motion.div
           initial={{ opacity: 0, y: 20 }}

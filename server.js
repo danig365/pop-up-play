@@ -85,6 +85,16 @@ async function runMigrations() {
       console.warn('⚠️ SubscriptionSettings migration note:', migErr.message);
     }
 
+    // Add PayPal order ID column to UserSubscription
+    try {
+      await pool.query(`
+        ALTER TABLE "UserSubscription"
+        ADD COLUMN IF NOT EXISTS paypal_order_id VARCHAR(255);
+      `);
+    } catch (migErr) {
+      console.warn('⚠️ UserSubscription migration note:', migErr.message);
+    }
+
     // Verify table structures
     const accessCodeCols = await pool.query(`
       SELECT column_name FROM information_schema.columns 
@@ -512,6 +522,56 @@ app.post('/api/auth/reset-password', async (req, res) => {
     });
   } catch (error) {
     console.error('❌ [ResetPassword] Error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Change Password (authenticated user)
+app.post('/api/auth/change-password', async (req, res) => {
+  try {
+    const { email, currentPassword, newPassword } = req.body;
+
+    if (!email || !currentPassword || !newPassword) {
+      return res.status(400).json({ error: 'Email, current password, and new password are required' });
+    }
+
+    if (newPassword.length < 8) {
+      return res.status(400).json({ error: 'New password must be at least 8 characters' });
+    }
+
+    // Get user
+    const userResult = await pool.query(
+      'SELECT * FROM "User" WHERE email = $1',
+      [email]
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const user = userResult.rows[0];
+    const currentPasswordHash = Buffer.from(currentPassword).toString('base64');
+
+    // Verify current password
+    if (user.password_hash !== currentPasswordHash) {
+      return res.status(401).json({ error: 'Current password is incorrect' });
+    }
+
+    // Update to new password
+    const newPasswordHash = Buffer.from(newPassword).toString('base64');
+    
+    await pool.query(
+      'UPDATE "User" SET password_hash = $1 WHERE email = $2',
+      [newPasswordHash, email]
+    );
+
+    console.log('✅ [ChangePassword] Password updated for:', email);
+    res.json({ 
+      success: true, 
+      message: 'Password changed successfully' 
+    });
+  } catch (error) {
+    console.error('❌ [ChangePassword] Error:', error.message);
     res.status(500).json({ error: error.message });
   }
 });
@@ -1076,6 +1136,269 @@ app.post('/api/functions/getSubscriptionStatus', async (req, res) => {
       error: error.message
     });
   }
+});
+
+// ============ Chat Message Email Notifications ============
+
+// POST /api/email/send-chat-notification - Send email when user receives a message
+app.post('/api/email/send-chat-notification', async (req, res) => {
+  try {
+    const { recipientEmail, senderEmail, messageContent, senderName } = req.body;
+
+    if (!recipientEmail || !senderEmail || !messageContent || !senderName) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    // Get recipient user to verify they exist
+    const recipientResult = await pool.query(
+      'SELECT email FROM "User" WHERE email = $1',
+      [recipientEmail]
+    );
+
+    if (recipientResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Recipient not found' });
+    }
+
+    // Prepare email content - similar to forgot password style
+    const mailOptions = {
+      from: process.env.GMAIL_USER,
+      to: recipientEmail,
+      subject: `New message from ${senderName} - Pop Up Play`,
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <h2 style="color: #1e293b; border-bottom: 2px solid #8b5cf6; padding-bottom: 10px;">New Message from ${senderName}</h2>
+          
+          <div style="background-color: #f1f5f9; padding: 15px; border-radius: 8px; margin: 20px 0;">
+            <p style="color: #1e293b; font-style: italic; margin: 0;">
+              "${messageContent}"
+            </p>
+          </div>
+
+          <p style="color: #475569; margin: 20px 0;">
+            Log in to <strong>Pop Up Play</strong> to reply to this message.
+          </p>
+
+          <a href="${process.env.FRONTEND_URL || 'http://localhost:5173'}/#/Chat" 
+             style="background-color: #8b5cf6; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block; font-weight: bold;">
+            Reply in Pop Up Play
+          </a>
+
+          <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 30px 0;">
+          
+          <p style="color: #94a3b8; font-size: 12px;">
+            This is an automated email from Pop Up Play. Please do not reply to this email.
+          </p>
+        </div>
+      `,
+    };
+
+    // Send email asynchronously (don't wait for completion)
+    transporter.sendMail(mailOptions, (error, info) => {
+      if (error) {
+        console.error('❌ [ChatNotification] Email send failed for', recipientEmail, ':', error.message);
+      } else {
+        console.log('✅ [ChatNotification] Email sent to', recipientEmail, ':', info.response);
+      }
+    });
+
+    // Respond immediately (email sends in background)
+    res.json({ 
+      success: true, 
+      message: 'Email notification sent to recipient'
+    });
+
+  } catch (error) {
+    console.error('❌ [ChatNotification] Error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============ PayPal Integration Routes ============
+
+// PayPal configuration
+const PAYPAL_CLIENT_ID = process.env.PAYPAL_CLIENT_ID;
+const PAYPAL_CLIENT_SECRET = process.env.PAYPAL_CLIENT_SECRET;
+const PAYPAL_MODE = process.env.PAYPAL_MODE || 'sandbox';
+const PAYPAL_API_BASE = PAYPAL_MODE === 'sandbox' 
+  ? 'https://api-m.sandbox.paypal.com' 
+  : 'https://api-m.paypal.com';
+
+// Get PayPal Access Token
+async function getPayPalAccessToken() {
+  const auth = Buffer.from(`${PAYPAL_CLIENT_ID}:${PAYPAL_CLIENT_SECRET}`).toString('base64');
+  
+  const response = await fetch(`${PAYPAL_API_BASE}/v1/oauth2/token`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Basic ${auth}`,
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: 'grant_type=client_credentials',
+  });
+
+  if (!response.ok) {
+    const error = await response.text();
+    console.error('PayPal auth error:', error);
+    throw new Error('Failed to get PayPal access token');
+  }
+
+  const data = await response.json();
+  return data.access_token;
+}
+
+// Create PayPal Order
+app.post('/api/paypal/create-order', async (req, res) => {
+  try {
+    const userEmail = req.headers['x-user-email'];
+    if (!userEmail) {
+      return res.status(401).json({ error: 'User email required' });
+    }
+
+    // Get subscription settings for price
+    const settingsResult = await pool.query('SELECT * FROM "SubscriptionSettings" ORDER BY updated_date DESC LIMIT 1');
+    const settings = settingsResult.rows[0];
+    
+    if (!settings) {
+      return res.status(400).json({ error: 'No subscription settings found' });
+    }
+
+    // Parse price as float (PostgreSQL DECIMAL comes as string)
+    const price = parseFloat(settings.monthly_price) || 19.00;
+
+    const accessToken = await getPayPalAccessToken();
+
+    const orderData = {
+      intent: 'CAPTURE',
+      purchase_units: [{
+        amount: {
+          currency_code: settings.currency || 'USD',
+          value: price.toFixed(2),
+        },
+        description: settings.plan_name || 'Premium Membership',
+      }],
+      application_context: {
+        brand_name: 'Pop-Up Play',
+        landing_page: 'NO_PREFERENCE',
+        user_action: 'PAY_NOW',
+        return_url: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/#/SubscriptionSuccess`,
+        cancel_url: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/#/Pricing`,
+      },
+    };
+
+    const response = await fetch(`${PAYPAL_API_BASE}/v2/checkout/orders`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(orderData),
+    });
+
+    if (!response.ok) {
+      const error = await response.text();
+      console.error('PayPal create order error:', error);
+      throw new Error('Failed to create PayPal order');
+    }
+
+    const order = await response.json();
+    console.log('✅ PayPal order created:', order.id);
+
+    res.json({
+      orderID: order.id,
+      approvalUrl: order.links.find(link => link.rel === 'approve')?.href,
+    });
+  } catch (error) {
+    console.error('❌ PayPal create order error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Capture PayPal Order (after user approval)
+app.post('/api/paypal/capture-order', async (req, res) => {
+  try {
+    const { orderID } = req.body;
+    const userEmail = req.headers['x-user-email'];
+
+    if (!orderID) {
+      return res.status(400).json({ error: 'Order ID required' });
+    }
+
+    if (!userEmail) {
+      return res.status(401).json({ error: 'User email required' });
+    }
+
+    const accessToken = await getPayPalAccessToken();
+
+    const response = await fetch(`${PAYPAL_API_BASE}/v2/checkout/orders/${orderID}/capture`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+    });
+
+    if (!response.ok) {
+      const error = await response.text();
+      console.error('PayPal capture error:', error);
+      throw new Error('Failed to capture PayPal payment');
+    }
+
+    const captureData = await response.json();
+    console.log('✅ PayPal payment captured:', captureData.id);
+
+    // Create/update user subscription
+    const startDate = new Date();
+    const endDate = new Date();
+    endDate.setMonth(endDate.getMonth() + 1); // 1 month subscription
+
+    // Check if user already has a subscription
+    const existingSub = await pool.query(
+      'SELECT * FROM "UserSubscription" WHERE user_email = $1',
+      [userEmail]
+    );
+
+    if (existingSub.rows.length > 0) {
+      // Update existing subscription
+      await pool.query(
+        `UPDATE "UserSubscription" 
+         SET status = 'active', 
+             start_date = $1, 
+             end_date = $2, 
+             paypal_order_id = $3,
+             updated_date = CURRENT_TIMESTAMP 
+         WHERE user_email = $4`,
+        [startDate.toISOString(), endDate.toISOString(), orderID, userEmail]
+      );
+    } else {
+      // Create new subscription
+      await pool.query(
+        `INSERT INTO "UserSubscription" (user_email, status, start_date, end_date, paypal_order_id, created_date, updated_date)
+         VALUES ($1, 'active', $2, $3, $4, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+        [userEmail, startDate.toISOString(), endDate.toISOString(), orderID]
+      );
+    }
+
+    console.log('✅ Subscription activated for:', userEmail);
+
+    res.json({
+      success: true,
+      captureID: captureData.id,
+      status: captureData.status,
+      subscription: {
+        status: 'active',
+        start_date: startDate.toISOString(),
+        end_date: endDate.toISOString(),
+      },
+    });
+  } catch (error) {
+    console.error('❌ PayPal capture error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get PayPal Client ID for frontend
+app.get('/api/paypal/client-id', (req, res) => {
+  res.json({ clientId: PAYPAL_CLIENT_ID });
 });
 
 // ============ Start Server ============

@@ -3,7 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
-import { ArrowLeft, Save, Loader2, MessageCircle } from 'lucide-react';
+import { ArrowLeft, Save, Loader2, MessageCircle, Lock } from 'lucide-react';
 // @ts-ignore
 import { Button } from '@/components/ui/button';
 // @ts-ignore
@@ -31,6 +31,12 @@ export default function Profile() {
   const [viewingUserEmail, setViewingUserEmail] = useState(null);
   const [showDuplicateError, setShowDuplicateError] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  const [showChangePasswordDialog, setShowChangePasswordDialog] = useState(false);
+  const [passwordForm, setPasswordForm] = useState({
+    currentPassword: '',
+    newPassword: '',
+    confirmPassword: ''
+  });
   const [formData, setFormData] = useState({
     display_name: '',
     bio: '',
@@ -47,7 +53,8 @@ export default function Profile() {
     avatar_url: '',
     photos: [],
     videos: [],
-    location: ''
+    location: '',
+    email_notifications_enabled: true
   });
   const queryClient = useQueryClient();
 
@@ -124,7 +131,8 @@ export default function Profile() {
         avatar_url: displayProfile.avatar_url || '',
         photos: displayProfile.photos || [],
         videos: displayProfile.videos || [],
-        location: displayProfile.location || ''
+        location: displayProfile.location || '',
+        email_notifications_enabled: displayProfile.email_notifications_enabled !== false
       });
     } else if (user && isOwnProfile) {
       setFormData((prev) => ({
@@ -141,7 +149,7 @@ export default function Profile() {
         const validFields = [
           'display_name', 'bio', 'age', 'gender', 'interested_in',
           'interests', 'hobbies', 'looking_for', 'city', 'state', 'zip_code', 'country',
-          'avatar_url', 'photos', 'videos', 'location'
+          'avatar_url', 'photos', 'videos', 'location', 'email_notifications_enabled'
         ];
         
         const data = Object.fromEntries(
@@ -201,6 +209,55 @@ export default function Profile() {
     }
   });
 
+  const changePasswordMutation = useMutation({
+    mutationFn: async () => {
+      const { currentPassword, newPassword, confirmPassword } = passwordForm;
+
+      // Validation
+      if (!currentPassword || !newPassword || !confirmPassword) {
+        throw new Error('All fields are required');
+      }
+
+      if (newPassword.length < 8) {
+        throw new Error('New password must be at least 8 characters');
+      }
+
+      if (newPassword !== confirmPassword) {
+        throw new Error('Passwords do not match');
+      }
+
+      // Call backend API to change password
+      const response = await fetch('http://localhost:3001/api/auth/change-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: user.email,
+          currentPassword,
+          newPassword
+        })
+      });
+
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error || 'Failed to change password');
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      toast.success('Password changed successfully!');
+      setPasswordForm({
+        currentPassword: '',
+        newPassword: '',
+        confirmPassword: ''
+      });
+      setShowChangePasswordDialog(false);
+    },
+    onError: (error) => {
+      toast.error(error.message || 'Failed to change password');
+    }
+  });
+
   const handleSave = () => {
     // Validate required fields
     if (!formData.display_name || !formData.age || !formData.gender || !formData.interested_in || !formData.avatar_url || !formData.city || !formData.state || !formData.zip_code) {
@@ -218,6 +275,10 @@ export default function Profile() {
   const handleDeleteAccount = () => {
     deleteMutation.mutate();
     setShowDeleteDialog(false);
+  };
+
+  const handleChangePassword = () => {
+    changePasswordMutation.mutate();
   };
 
   if (!user || isLoading || viewingLoading) {
@@ -262,6 +323,70 @@ export default function Profile() {
             </AlertDialogAction>
             <AlertDialogAction onClick={handleDeleteAccount} className="bg-red-600 hover:bg-red-700">
               Yes
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Change Password Dialog */}
+      <AlertDialog open={showChangePasswordDialog} onOpenChange={setShowChangePasswordDialog}>
+        <AlertDialogContent className="max-w-md">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Change Password</AlertDialogTitle>
+          </AlertDialogHeader>
+          <div className="space-y-4 py-4">
+            <div>
+              <Label htmlFor="currentPassword" className="text-slate-700">Current Password</Label>
+              <Input
+                id="currentPassword"
+                type="password"
+                placeholder="••••••••"
+                value={passwordForm.currentPassword}
+                onChange={(e) => setPasswordForm(prev => ({ ...prev, currentPassword: e.target.value }))}
+                className="mt-2"
+              />
+            </div>
+            <div>
+              <Label htmlFor="newPassword" className="text-slate-700">New Password</Label>
+              <Input
+                id="newPassword"
+                type="password"
+                placeholder="••••••••"
+                value={passwordForm.newPassword}
+                onChange={(e) => setPasswordForm(prev => ({ ...prev, newPassword: e.target.value }))}
+                className="mt-2"
+              />
+            </div>
+            <div>
+              <Label htmlFor="confirmPassword" className="text-slate-700">Confirm Password</Label>
+              <Input
+                id="confirmPassword"
+                type="password"
+                placeholder="••••••••"
+                value={passwordForm.confirmPassword}
+                onChange={(e) => setPasswordForm(prev => ({ ...prev, confirmPassword: e.target.value }))}
+                className="mt-2"
+              />
+            </div>
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogAction 
+              onClick={() => setShowChangePasswordDialog(false)}
+              className="bg-slate-300 hover:bg-slate-400">
+              Cancel
+            </AlertDialogAction>
+            <AlertDialogAction 
+              onClick={handleChangePassword}
+              disabled={changePasswordMutation.isPending}
+              className="bg-violet-600 hover:bg-violet-700">
+              {changePasswordMutation.isPending ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Changing...
+                </>
+              ) : (
+                'Change Password'
+              )}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -632,6 +757,62 @@ export default function Profile() {
                 </>
               )}
             </Button>
+          </motion.div>
+        )}
+
+        {/* Change Password Section - Only for own profile */}
+        {isOwnProfile && (
+          <motion.div
+            className="bg-white rounded-2xl shadow-lg p-6 mt-6 border-2 border-violet-100"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.35 }}>
+            <h2 className="text-lg font-semibold text-violet-600 mb-2 flex items-center gap-2">
+              <Lock className="w-5 h-5" />
+              Change Password
+            </h2>
+            <p className="text-sm text-slate-600 mb-4">
+              Update your password to keep your account secure.
+            </p>
+            <Button
+              onClick={() => setShowChangePasswordDialog(true)}
+              className="bg-violet-600 hover:bg-violet-700 text-white">
+              Change Password
+            </Button>
+          </motion.div>
+        )}
+
+        {/* Notification Preferences - Only for own profile */}
+        {isOwnProfile && (
+          <motion.div
+            className="bg-white rounded-2xl shadow-lg p-6 mt-6 border-2 border-blue-100"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.37 }}>
+            <h2 className="text-lg font-semibold text-blue-600 mb-4 flex items-center gap-2">
+              <MessageCircle className="w-5 h-5" />
+              Notification Preferences
+            </h2>
+            <div className="flex items-center gap-4">
+              <div className="flex-1">
+                <Label className="text-slate-700 font-medium">Email Notifications for Chat Messages</Label>
+                <p className="text-sm text-slate-600 mt-1">
+                  Receive email notifications when someone sends you a chat message
+                </p>
+              </div>
+              <label className="relative inline-flex items-center cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={formData.email_notifications_enabled}
+                  onChange={(e) => setFormData({
+                    ...formData,
+                    email_notifications_enabled: e.target.checked
+                  })}
+                  className="sr-only peer"
+                />
+                <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+              </label>
+            </div>
           </motion.div>
         )}
 

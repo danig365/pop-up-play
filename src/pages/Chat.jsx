@@ -130,18 +130,31 @@ export default function Chat() {
         attachment_url
       });
 
-      // Send email notification to receiver
+      // Send email notification to receiver (if they have it enabled)
       try {
-        const senderProfile = profiles.find(p => p.user_email === user.email);
-        const senderName = senderProfile?.display_name || user.full_name || 'Someone';
-        
-        await base44.integrations.Core.SendEmail({
-          to: selectedConversation,
-          subject: `New message from ${senderName}`,
-          body: `You have received a new message from ${senderName}.\n\nMessage: ${content}\n\nLog in to Pop Up Play to reply.`
-        });
+        // Check if recipient has email notifications enabled
+        const recipientProfile = profiles.find(p => p.user_email === selectedConversation);
+        const emailNotificationsEnabled = recipientProfile?.email_notifications_enabled !== false;
+
+        if (emailNotificationsEnabled) {
+          const senderProfile = profiles.find(p => p.user_email === user.email);
+          const senderName = senderProfile?.display_name || user.email.split('@')[0] || 'Someone';
+          
+          const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001/api';
+          await fetch(`${API_BASE_URL}/email/send-chat-notification`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              recipientEmail: selectedConversation,
+              senderEmail: user.email,
+              senderName: senderName,
+              messageContent: content
+            })
+          });
+        }
       } catch (emailError) {
         console.error('Failed to send email notification:', emailError);
+        // Don't fail the message if email fails
       }
 
       return message;

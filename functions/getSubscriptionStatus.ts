@@ -92,14 +92,60 @@ Deno.serve(async (req) => {
       });
     }
 
-    // Check active subscription
-    const hasAccess = subscription.status === 'active';
+    // Check active subscription - also check if end_date has passed (for access codes)
+    if (subscription.status === 'active') {
+      const now = new Date();
+      const endDate = subscription.end_date ? new Date(subscription.end_date) : null;
 
+      // If subscription has an end_date and it has passed, mark as expired
+      if (endDate && now > endDate) {
+        console.log('Subscription expired:', subscription.id);
+        
+        // Update subscription status to expired
+        await base44.asServiceRole.entities.UserSubscription.update(subscription.id, {
+          status: 'expired'
+        });
+
+        // Auto pop-down user if they're popped up
+        try {
+          const profiles = await base44.asServiceRole.entities.UserProfile.filter({
+            user_email: user.email
+          });
+          
+          if (profiles.length > 0 && profiles[0].is_popped_up) {
+            await base44.asServiceRole.entities.UserProfile.update(profiles[0].id, {
+              is_popped_up: false,
+              popup_message: ''
+            });
+            console.log('Auto pop-down for expired subscription:', user.email);
+          }
+        } catch (popdownError) {
+          console.warn('Error auto pop-down for expired subscription:', popdownError.message);
+        }
+
+        return Response.json({
+          required: true,
+          hasAccess: false,
+          status: 'expired',
+          endDate: subscription.end_date
+        });
+      }
+
+      // Subscription is still active and not expired
+      return Response.json({
+        required: true,
+        hasAccess: true,
+        status: 'active',
+        endDate: subscription.end_date,
+        currentPeriodEnd: subscription.end_date
+      });
+    }
+
+    // Any other status (inactive, expired, etc.)
     return Response.json({
       required: true,
-      hasAccess,
-      status: subscription.status,
-      currentPeriodEnd: subscription.current_period_end
+      hasAccess: false,
+      status: subscription.status
     });
   } catch (error) {
     console.error('Get status error:', error);

@@ -1,17 +1,22 @@
 // @ts-nocheck
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { base44 } from '@/api/base44Client';
 import { useQuery } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
-import { Check, Loader2, Crown, Clock, ArrowLeft } from 'lucide-react';
+import { Check, Loader2, Crown, Clock, ArrowLeft, Key } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { createPageUrl } from '@/utils';
+
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001/api';
 
 export default function Pricing() {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [paypalLoaded, setPaypalLoaded] = useState(false);
+  const paypalButtonRef = useRef(null);
+  const navigate = useNavigate();
 
   useEffect(() => {
     const loadUser = async () => {
@@ -23,6 +28,44 @@ export default function Pricing() {
       }
     };
     loadUser();
+  }, []);
+
+  // Load PayPal SDK
+  useEffect(() => {
+    const loadPayPalScript = async () => {
+      try {
+        // Get PayPal client ID from backend
+        const response = await fetch(`${API_BASE_URL}/paypal/client-id`);
+        const { clientId } = await response.json();
+        
+        if (!clientId) {
+          console.error('PayPal client ID not configured');
+          return;
+        }
+
+        // Check if script already exists
+        if (document.querySelector('script[src*="paypal.com/sdk"]')) {
+          setPaypalLoaded(true);
+          return;
+        }
+
+        const script = document.createElement('script');
+        script.src = `https://www.paypal.com/sdk/js?client-id=${clientId}&currency=USD`;
+        script.async = true;
+        script.onload = () => {
+          console.log('✅ PayPal SDK loaded');
+          setPaypalLoaded(true);
+        };
+        script.onerror = () => {
+          console.error('❌ Failed to load PayPal SDK');
+        };
+        document.body.appendChild(script);
+      } catch (error) {
+        console.error('Error loading PayPal:', error);
+      }
+    };
+
+    loadPayPalScript();
   }, []);
 
   const { data: settings } = useQuery({
@@ -37,7 +80,7 @@ export default function Pricing() {
     }
   });
 
-  const { data: subscription } = useQuery({
+  const { data: subscription, refetch: refetchSubscription } = useQuery({
     queryKey: ['userSubscription', user?.email],
     queryFn: async () => {
       if (!user) return null;
@@ -49,9 +92,85 @@ export default function Pricing() {
     enabled: !!user
   });
 
-  const handleSubscribe = async () => {
-    // Redirect to access code page for users to redeem their subscription code
-    window.location.href = createPageUrl('EnterAccessCode');
+  // Initialize PayPal Buttons when SDK loads and user/settings are ready
+  useEffect(() => {
+    if (!paypalLoaded || !user || !settings || subscription?.status === 'active') return;
+    if (!paypalButtonRef.current) return;
+
+    // Clear existing buttons
+    paypalButtonRef.current.innerHTML = '';
+
+    // @ts-ignore - PayPal is loaded via script
+    if (window.paypal) {
+      // @ts-ignore
+      window.paypal.Buttons({
+        fundingSource: window.paypal.FUNDING.PAYPAL, // Only show PayPal button
+        style: {
+          layout: 'vertical',
+          color: 'gold',
+          shape: 'rect',
+          label: 'paypal',
+          height: 50,
+        },
+        createOrder: async () => {
+          setLoading(true);
+          try {
+            const response = await fetch(`${API_BASE_URL}/paypal/create-order`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'x-user-email': user.email,
+              },
+            });
+            const data = await response.json();
+            if (data.error) throw new Error(data.error);
+            return data.orderID;
+          } catch (error) {
+            console.error('Create order error:', error);
+            toast.error('Failed to create payment. Please try again.');
+            setLoading(false);
+            throw error;
+          }
+        },
+        onApprove: async (data) => {
+          try {
+            const response = await fetch(`${API_BASE_URL}/paypal/capture-order`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'x-user-email': user.email,
+              },
+              body: JSON.stringify({ orderID: data.orderID }),
+            });
+            const captureData = await response.json();
+            if (captureData.error) throw new Error(captureData.error);
+            
+            console.log('✅ Payment successful:', captureData);
+            toast.success('Payment successful! Welcome to Premium!');
+            refetchSubscription();
+            navigate(createPageUrl('SubscriptionSuccess'));
+          } catch (error) {
+            console.error('Capture error:', error);
+            toast.error('Payment verification failed. Please contact support.');
+          } finally {
+            setLoading(false);
+          }
+        },
+        onCancel: () => {
+          setLoading(false);
+          toast.info('Payment cancelled');
+        },
+        onError: (err) => {
+          console.error('PayPal error:', err);
+          setLoading(false);
+          toast.error('Payment error. Please try again.');
+        },
+      }).render(paypalButtonRef.current);
+    }
+  }, [paypalLoaded, user, settings, subscription, navigate, refetchSubscription]);
+
+  const handleAccessCode = () => {
+    navigate(createPageUrl('EnterAccessCode'));
   };
 
   if (!user || !settings) {
@@ -161,24 +280,49 @@ export default function Pricing() {
                     <Check className="w-5 h-5" />
                     Active Subscription
                   </div>
-                  {subscription.current_period_end && (
-                    <p className="text-sm text-slate-600">
-                      {Math.max(0, Math.ceil((new Date(subscription.current_period_end) - new Date()) / (1000 * 60 * 60 * 24)))} days remaining
-                    </p>
+                  {(subscription.current_period_end || subscription.end_date) && (
+                      <div className="space-y-2">
+                        <p className="text-sm text-slate-600">
+                          {Math.max(0, Math.ceil((new Date(subscription.current_period_end || subscription.end_date) - new Date()) / (1000 * 60 * 60 * 24)))} days remaining
+                        </p>
+                        <p className="text-xs text-slate-500">
+                          Expires on {new Date(subscription.current_period_end || subscription.end_date).toLocaleDateString()}
+                        </p>
+                      </div>
                   )}
                 </div>
               ) : (
-                <Button
-                  onClick={handleSubscribe}
-                  disabled={loading}
-                  className="w-full py-6 text-lg bg-gradient-to-r from-violet-600 to-purple-600 hover:from-violet-700 hover:to-purple-700 text-white rounded-xl"
-                >
-                  {loading ? (
-                    <Loader2 className="w-5 h-5 animate-spin" />
-                  ) : (
-                    'Get Started Now'
-                  )}
-                </Button>
+                <div className="space-y-4">
+                  {/* PayPal Button Container */}
+                  <div ref={paypalButtonRef} className="min-h-[50px]">
+                    {!paypalLoaded && (
+                      <div className="flex items-center justify-center py-4">
+                        <Loader2 className="w-6 h-6 text-violet-500 animate-spin" />
+                        <span className="ml-2 text-slate-600">Loading payment options...</span>
+                      </div>
+                    )}
+                  </div>
+                  
+                  {/* Divider */}
+                  <div className="relative">
+                    <div className="absolute inset-0 flex items-center">
+                      <div className="w-full border-t border-slate-200"></div>
+                    </div>
+                    <div className="relative flex justify-center text-sm">
+                      <span className="px-2 bg-white text-slate-500">or</span>
+                    </div>
+                  </div>
+
+                  {/* Access Code Button */}
+                  <Button
+                    onClick={handleAccessCode}
+                    variant="outline"
+                    className="w-full py-5 text-base border-2 border-violet-300 text-violet-700 hover:bg-violet-50 rounded-xl"
+                  >
+                    <Key className="w-5 h-5 mr-2" />
+                    Have an Access Code?
+                  </Button>
+                </div>
               )}
             </div>
           </div>
