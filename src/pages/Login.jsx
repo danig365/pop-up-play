@@ -99,6 +99,9 @@ export default function Login() {
             />
             <h1 className="text-2xl font-bold text-slate-900">Welcome to Pop Up Play</h1>
             <p className="text-slate-500 mt-1 text-sm">Sign in to continue</p>
+            <p className="text-violet-600 mt-4 text-sm font-bold leading-relaxed">
+              Connect and play with couples, singles, and alternative lifestyle lovers—right now, not tomorrow, not next week but right now.
+            </p>
           </div>
 
           {/* Email and Password Form */}
