@@ -9,7 +9,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { createPageUrl } from '@/utils';
 import logoImage from '@/assets/logo.jpeg';
-
+import PlayButtonRed from '@/assets/PlayButtonRed.jsx';
 export default function Login() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -140,14 +140,17 @@ export default function Login() {
         >
           {/* Logo / Header */}
           <div className="text-center mb-8">
-            <p className="text-violet-600 mb-4 text-sm font-bold leading-relaxed">
-              Connect and play with couples, singles, and alternative lifestyle lovers—right now, not tomorrow, not next week but right now.
-            </p>
             <img 
               src={logoImage} 
               alt="Pop Up Play" 
               className="w-20 h-20 mx-auto mb-4 object-contain"
             />
+            <p className="text-violet-600 mb-4 text-sm font-bold leading-relaxed">
+              Connect and play with couples, singles, and alternative lifestyle lovers—right now, not tomorrow, not next week but right now.
+            </p>
+            <div className="flex flex-col items-center mb-2">
+              <PlayButtonRed size={32} />
+            </div>
             <h1 className="text-2xl font-bold text-slate-900">Welcome to Pop Up Play</h1>
             <p className="text-slate-500 mt-1 text-sm">Sign in to continue</p>
           </div>

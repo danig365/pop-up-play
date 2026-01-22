@@ -7,6 +7,7 @@ import { motion } from 'framer-motion';
 import NotificationBadge from '@/components/notifications/NotificationBadge';
 import { useQuery } from '@tanstack/react-query';
 import { base44 } from '@/api/base44Client';
+import reelsImage from '@/assets/image-removebg-preview.png';
 
 export default function Menu() {
   const [user, setUser] = React.useState(null);
@@ -62,6 +63,14 @@ export default function Menu() {
       path: 'OnlineMembers',
       color: 'bg-emerald-300',
       description: 'See who\'s active now'
+    },
+    {
+      label: 'Reels',
+      icon: reelsImage,
+      path: 'Reels',
+      color: 'bg-pink-300',
+      description: 'Watch and share reels',
+      isImage: true
     },
     {
       label: 'About',
@@ -173,14 +182,23 @@ export default function Menu() {
                 className="bg-white rounded-2xl shadow-lg p-6 hover:shadow-xl transition-all cursor-pointer"
               >
                 <div className="flex items-center gap-4">
-                  <div className={`${item.color} w-16 h-16 rounded-full flex items-center justify-center relative`}>
-                    <Icon className="w-8 h-8 text-slate-700" />
+                  <div className={`${item.color} w-16 h-16 rounded-full flex items-center justify-center relative overflow-hidden`}>
+                    {item.isImage ? (
+                      <img src={Icon} alt={item.label} className={item.label === 'Reels' ? 'w-14 h-14 object-contain' : 'w-8 h-8 object-contain'} />
+                    ) : (
+                      <Icon className="w-8 h-8 text-slate-700" />
+                    )}
                     {item.badge > 0 && (
                       <NotificationBadge count={item.badge} className="absolute -top-2 -right-2" />
                     )}
                   </div>
                   <div className="flex-1">
-                    <h3 className="text-xl font-semibold text-slate-800 mb-1 relative">
+                    <h3
+                      className={
+                        `text-xl font-semibold mb-1 relative ` +
+                        (item.label === 'Reels' ? ' font-[Mashiro] tracking-wide text-red-500' : 'text-slate-800')
+                      }
+                    >
                       {item.label === 'Members Popped Up' && (
                         <>
                           <Flame className="w-5 h-5 text-red-500 absolute -left-7 top-0.5" />

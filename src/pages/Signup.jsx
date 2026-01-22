@@ -169,10 +169,10 @@ export default function Signup() {
 
           {/* Header */}
           <div className="text-center mb-8">
-            <h1 className="text-3xl font-bold text-slate-900">Create your account</h1>
-            <p className="text-violet-600 mt-4 text-sm font-bold leading-relaxed">
+            <p className="text-violet-600 mb-4 text-sm font-bold leading-relaxed">
               Connect and play with couples, singles, and alternative lifestyle lovers—right now, not tomorrow, not next week but right now.
             </p>
+            <h1 className="text-3xl font-bold text-slate-900">Create your account</h1>
           </div>
 
           {/* Signup Form */}

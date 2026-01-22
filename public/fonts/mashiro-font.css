@@ -1,0 +1,8 @@
+/* Mashiro font-face for local use. Adjust the src path if you move the font file. */
+@font-face {
+  font-family: 'Mashiro';
+  src: url('/fonts/Mashiro.otf') format('opentype');
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
