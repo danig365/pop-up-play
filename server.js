@@ -95,6 +95,47 @@ async function runMigrations() {
       console.warn('⚠️ UserSubscription migration note:', migErr.message);
     }
 
+    // Create Reel table if it doesn't exist
+    try {
+      // Try to create the table (will fail if no CREATE permission, but table may already exist)
+      try {
+        await pool.query(`
+          CREATE TABLE IF NOT EXISTS "Reel" (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            user_email VARCHAR(255) NOT NULL REFERENCES "User"(email) ON DELETE CASCADE,
+            video_url TEXT NOT NULL,
+            caption TEXT,
+            duration INTEGER,
+            views INTEGER DEFAULT 0,
+            created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+          )
+        `);
+      } catch (e) {
+        // If permission denied, table was likely created by admin/postgres
+        if (!e.message.includes('permission denied')) {
+          throw e;
+        }
+      }
+      
+      // Try to create indexes (non-blocking if they fail)
+      try {
+        await pool.query(`CREATE INDEX IF NOT EXISTS idx_reel_user_email ON "Reel"(user_email)`);
+      } catch (e) {
+        // Silently ignore index creation errors
+      }
+      
+      try {
+        await pool.query(`CREATE INDEX IF NOT EXISTS idx_reel_created_date ON "Reel"(created_date)`);
+      } catch (e) {
+        // Silently ignore index creation errors
+      }
+      
+      console.log('✅ Reel table ready');
+    } catch (migErr) {
+      console.warn('⚠️ Reel table migration note:', migErr.message);
+    }
+
     // Verify table structures
     const accessCodeCols = await pool.query(`
       SELECT column_name FROM information_schema.columns 
@@ -691,7 +732,7 @@ app.get('/api/entities/:table', async (req, res) => {
 
     // Validate table name (prevent SQL injection)
     const validTables = ['User', 'UserProfile', 'UserSubscription', 'SubscriptionSettings', 
-                         'Message', 'AccessCode', 'AboutVideo', 'BlockedUser', 'BroadcastMessage', 'UserSession', 'VideoSignal'];
+               'Message', 'AccessCode', 'AboutVideo', 'BlockedUser', 'BroadcastMessage', 'UserSession', 'VideoSignal', 'Reel'];
     
     if (!validTables.includes(table)) {
       return res.status(400).json({ error: 'Invalid table name' });
@@ -715,7 +756,7 @@ app.post('/api/entities/:table/filter', async (req, res) => {
 
     // Validate table name
     const validTables = ['User', 'UserProfile', 'UserSubscription', 'SubscriptionSettings', 
-                         'Message', 'AccessCode', 'AboutVideo', 'BlockedUser', 'BroadcastMessage', 'UserSession', 'VideoSignal'];
+               'Message', 'AccessCode', 'AboutVideo', 'BlockedUser', 'BroadcastMessage', 'UserSession', 'VideoSignal', 'Reel'];
     
     if (!validTables.includes(table)) {
       return res.status(400).json({ error: 'Invalid table name' });
@@ -755,11 +796,17 @@ app.post('/api/entities/:table', async (req, res) => {
     const { table } = req.params;
     const data = req.body;
 
+    // Debug: Log incoming request for entity creation
+    console.log('--- [DEBUG ENTITY CREATE] ---');
+    console.log('Table:', table);
+    console.log('Data:', JSON.stringify(data, null, 2));
+    console.log('-----------------------------');
+
     // Validate table name
     const validTables = ['User', 'UserProfile', 'UserSubscription', 'SubscriptionSettings', 
-                         'Message', 'AccessCode', 'AboutVideo', 'BlockedUser', 'BroadcastMessage', 'UserSession', 'VideoSignal'];
-    
+               'Message', 'AccessCode', 'AboutVideo', 'BlockedUser', 'BroadcastMessage', 'UserSession', 'VideoSignal', 'Reel'];
     if (!validTables.includes(table)) {
+      console.error('[DEBUG ENTITY CREATE] Invalid table name:', table);
       return res.status(400).json({ error: 'Invalid table name' });
     }
 
@@ -769,10 +816,14 @@ app.post('/api/entities/:table', async (req, res) => {
       'SubscriptionSettings': ['features']
     };
     const tableArrayColumns = arrayColumns[table] || [];
-    
+
     const columns = Object.keys(data);
     const values = Object.values(data);
-    
+
+    // Debug: Log columns and values
+    console.log('[DEBUG ENTITY CREATE] Columns:', columns);
+    console.log('[DEBUG ENTITY CREATE] Values:', values);
+
     // Build placeholders with type casting for array columns
     const placeholders = columns.map((col, i) => {
       if (tableArrayColumns.includes(col)) {
@@ -780,16 +831,27 @@ app.post('/api/entities/:table', async (req, res) => {
       }
       return `$${i + 1}`;
     }).join(', ');
-    
+
     const columnList = columns.map(col => `"${col}"`).join(', ');
 
     const query = `INSERT INTO "${table}" (${columnList}) VALUES (${placeholders}) RETURNING *`;
-    
+
+    // Debug: Log final query and values
+    console.log('[DEBUG ENTITY CREATE] Query:', query);
+    console.log('[DEBUG ENTITY CREATE] Query Values:', values);
+
     const result = await pool.query(query, values);
+    console.log('[DEBUG ENTITY CREATE] Success:', result.rows[0]);
     res.json(result.rows[0]);
   } catch (error) {
     console.error(`❌ [CREATE] Error for table ${req.params.table}:`, error.message);
     console.error(`❌ [CREATE] Full error:`, error);
+    if (error.detail) {
+      console.error('[DEBUG ENTITY CREATE] Error Detail:', error.detail);
+    }
+    if (error.code) {
+      console.error('[DEBUG ENTITY CREATE] Error Code:', error.code);
+    }
     res.status(500).json({ 
       error: error.message,
       details: error.detail || error.code
@@ -804,7 +866,7 @@ app.get('/api/entities/:table/:id', async (req, res) => {
 
     // Validate table name
     const validTables = ['User', 'UserProfile', 'UserSubscription', 'SubscriptionSettings', 
-                         'Message', 'AccessCode', 'AboutVideo', 'BlockedUser', 'BroadcastMessage', 'UserSession', 'VideoSignal'];
+               'Message', 'AccessCode', 'AboutVideo', 'BlockedUser', 'BroadcastMessage', 'UserSession', 'VideoSignal', 'Reel'];
     
     if (!validTables.includes(table)) {
       return res.status(400).json({ error: 'Invalid table name' });
@@ -834,7 +896,7 @@ app.put('/api/entities/:table/:id', async (req, res) => {
 
     // Validate table name
     const validTables = ['User', 'UserProfile', 'UserSubscription', 'SubscriptionSettings', 
-                         'Message', 'AccessCode', 'AboutVideo', 'BlockedUser', 'BroadcastMessage', 'UserSession', 'VideoSignal'];
+               'Message', 'AccessCode', 'AboutVideo', 'BlockedUser', 'BroadcastMessage', 'UserSession', 'VideoSignal', 'Reel'];
     
     if (!validTables.includes(table)) {
       return res.status(400).json({ error: 'Invalid table name' });
@@ -890,7 +952,7 @@ app.delete('/api/entities/:table/:id', async (req, res) => {
 
     // Validate table name
     const validTables = ['User', 'UserProfile', 'UserSubscription', 'SubscriptionSettings', 
-                         'Message', 'AccessCode', 'AboutVideo', 'BlockedUser', 'BroadcastMessage', 'UserSession', 'VideoSignal'];
+               'Message', 'AccessCode', 'AboutVideo', 'BlockedUser', 'BroadcastMessage', 'UserSession', 'VideoSignal', 'Reel'];
     
     if (!validTables.includes(table)) {
       return res.status(400).json({ error: 'Invalid table name' });

@@ -148,8 +148,9 @@ export default function Login() {
             <p className="text-violet-600 mb-4 text-sm font-bold leading-relaxed">
               Connect and play with couples, singles, and alternative lifestyle lovers—right now, not tomorrow, not next week but right now.
             </p>
-            <div className="flex flex-col items-center mb-2">
+            <div className="flex items-center justify-center gap-3 mb-2">
               <PlayButtonRed size={32} />
+              <p className="text-blue-600 font-semibold text-sm">Click Here to Watch Promo</p>
             </div>
             <h1 className="text-2xl font-bold text-slate-900">Welcome to Pop Up Play</h1>
             <p className="text-slate-500 mt-1 text-sm">Sign in to continue</p>

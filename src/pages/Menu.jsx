@@ -11,7 +11,7 @@ import reelsImage from '@/assets/image-removebg-preview.png';
 
 export default function Menu() {
   const [user, setUser] = React.useState(null);
-
+// Fetch current user on component mount
   React.useEffect(() => {
     const loadUser = async () => {
       try {
@@ -196,7 +196,7 @@ export default function Menu() {
                     <h3
                       className={
                         `text-xl font-semibold mb-1 relative ` +
-                        (item.label === 'Reels' ? ' font-[Mashiro] tracking-wide text-red-500' : 'text-slate-800')
+                        (item.label === 'Reels' ? ' font-[Mashiro] tracking-wide text-black-500' : 'text-slate-800')
                       }
                     >
                       {item.label === 'Members Popped Up' && (

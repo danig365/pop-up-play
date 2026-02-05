@@ -418,6 +418,7 @@ class APIBase44 {
       BroadcastMessage: new APIEntity('BroadcastMessage'),
       UserSession: new APIEntity('UserSession'),
       VideoSignal: new APIEntity('VideoSignal'),
+      Reel: new APIEntity('Reel'),
     };
     
     // Service role for admin operations

@@ -1,4 +1,3 @@
-// @ts-nocheck
 import React, { useState, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -19,6 +18,7 @@ import { createPageUrl } from '@/utils';
 import AvatarUpload from '@/components/profile/AvatarUpload';
 import PhotoGallery from '@/components/profile/PhotoGallery';
 import VideoGallery from '@/components/profile/VideoGallery';
+import ReelGallery from '@/components/profile/ReelGallery';
 // @ts-ignore
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { toast } from 'sonner';
@@ -714,6 +714,9 @@ export default function Profile() {
               <TabsTrigger value="videos" className="flex-1 rounded-lg data-[state=active]:bg-white">
                 Videos
               </TabsTrigger>
+              <TabsTrigger value="reels" className="flex-1 rounded-lg data-[state=active]:bg-white">
+                Reels
+              </TabsTrigger>
             </TabsList>
             
             <TabsContent value="photos">
@@ -728,6 +731,13 @@ export default function Profile() {
               <VideoGallery
                 videos={formData.videos}
                 onVideosChange={(videos) => setFormData((prev) => ({ ...prev, videos }))}
+                editable={isOwnProfile} />
+
+            </TabsContent>
+
+            <TabsContent value="reels">
+              <ReelGallery
+                userEmail={viewingUserEmail}
                 editable={isOwnProfile} />
 
             </TabsContent>

@@ -12,6 +12,7 @@ import Login from './pages/Login';
 import Menu from './pages/Menu';
 import Pricing from './pages/Pricing';
 import Profile from './pages/Profile';
+import Reels from './pages/Reels';
 import ResetPassword from './pages/ResetPassword';
 import Signup from './pages/Signup';
 import SubscriptionSettings from './pages/SubscriptionSettings';
@@ -36,6 +37,7 @@ export const PAGES = {
     "Menu": Menu,
     "Pricing": Pricing,
     "Profile": Profile,
+    "Reels": Reels,
     "ResetPassword": ResetPassword,
     "Signup": Signup,
     "SubscriptionSettings": SubscriptionSettings,
