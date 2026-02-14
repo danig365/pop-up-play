@@ -3,6 +3,7 @@ import { base44 } from '@/api/base44Client';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
 import { ArrowLeft, Save, Loader2, MessageCircle, Lock } from 'lucide-react';
+import { getApiBaseUrl } from '@/lib/apiUrl';
 // @ts-ignore
 import { Button } from '@/components/ui/button';
 // @ts-ignore
@@ -226,8 +227,7 @@ export default function Profile() {
         throw new Error('Passwords do not match');
       }
 
-      // Call backend API to change password
-      const response = await fetch('http://localhost:3001/api/auth/change-password', {
+      const response = await fetch(`${getApiBaseUrl()}/auth/change-password`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

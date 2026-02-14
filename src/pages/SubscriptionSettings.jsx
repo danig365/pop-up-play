@@ -15,11 +15,13 @@ export default function SubscriptionSettings() {
   const [user, setUser] = useState(null);
   const [backUrl, setBackUrl] = useState(createPageUrl('Dashboard'));
   const [formData, setFormData] = useState({
+    plan_name: 'Premium',
+    description: '',
     monthly_price: 0,
+    annual_price: 0,
     stripe_price_id: '',
-    free_trial_enabled: false,
-    trial_days: 30,
-    subscription_enabled: false
+    currency: 'USD',
+    features: []
   });
   const queryClient = useQueryClient();
 
@@ -63,11 +65,13 @@ export default function SubscriptionSettings() {
   useEffect(() => {
     if (settings) {
       setFormData({
+        plan_name: settings.plan_name || 'Premium',
+        description: settings.description || '',
         monthly_price: settings.monthly_price || 0,
+        annual_price: settings.annual_price || 0,
         stripe_price_id: settings.stripe_price_id || '',
-        free_trial_enabled: settings.free_trial_enabled || false,
-        trial_days: settings.trial_days || 30,
-        subscription_enabled: settings.subscription_enabled || false
+        currency: settings.currency || 'USD',
+        features: settings.features || []
       });
     }
   }, [settings]);
@@ -95,8 +99,8 @@ export default function SubscriptionSettings() {
   });
 
   const handleSave = () => {
-    if (!formData.monthly_price || !formData.stripe_price_id) {
-      toast.error('Please fill in all required fields');
+    if (!formData.plan_name || !formData.monthly_price) {
+      toast.error('Please fill in all required fields (Plan Name, Monthly Price)');
       return;
     }
     saveMutation.mutate(formData);
@@ -146,6 +150,36 @@ export default function SubscriptionSettings() {
           </div>
 
           <div className="space-y-6">
+            <div>
+              <Label htmlFor="plan_name" className="text-slate-600">
+                Plan Name *
+              </Label>
+              <Input
+                id="plan_name"
+                value={formData.plan_name}
+                onChange={(e) =>
+                  setFormData((prev) => ({ ...prev, plan_name: e.target.value }))
+                }
+                placeholder="e.g., Premium, Professional"
+                className="mt-1 rounded-xl border-slate-200"
+              />
+            </div>
+
+            <div>
+              <Label htmlFor="description" className="text-slate-600">
+                Description
+              </Label>
+              <Input
+                id="description"
+                value={formData.description}
+                onChange={(e) =>
+                  setFormData((prev) => ({ ...prev, description: e.target.value }))
+                }
+                placeholder="e.g., Premium features for professionals"
+                className="mt-1 rounded-xl border-slate-200"
+              />
+            </div>
+
             <div className="flex items-center justify-between p-4 bg-slate-50 rounded-xl">
               <div>
                 <Label className="text-slate-800 font-semibold">Enable Subscription</Label>

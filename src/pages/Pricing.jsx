@@ -7,9 +7,10 @@ import { Check, Loader2, Crown, Clock, ArrowLeft, Key } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
 import { Link, useNavigate } from 'react-router-dom';
+import { getApiBaseUrl } from '@/lib/apiUrl';
 import { createPageUrl } from '@/utils';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001/api';
+const API_BASE_URL = getApiBaseUrl();
 
 export default function Pricing() {
   const [user, setUser] = useState(null);

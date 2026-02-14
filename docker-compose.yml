@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: pop-up-play-db
+    environment:
+      POSTGRES_USER: ${DB_USER:-popupapp}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-popup2024}
+      POSTGRES_DB: ${DB_NAME:-popup_play_db}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-popupapp}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build: .
+    container_name: pop-up-play-app
+    env_file:
+      - .env
+    ports:
+      - "3000:3000"
+      - "3001:3001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    volumes:
+      - ./src:/app/src
+
+volumes:
+  postgres_data:

@@ -4,6 +4,7 @@ import { base44 } from '@/api/base44Client';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
 import { ArrowLeft, Send, Loader2, CheckCircle2, Trash2 } from 'lucide-react';
+import { getApiBaseUrl } from '@/lib/apiUrl';
 import { Button } from '@/components/ui/button';
 import {
   AlertDialog,
@@ -51,7 +52,8 @@ export default function Broadcast() {
     queryKey: ['broadcasts'],
     queryFn: async () => {
       console.log('📢 [Broadcast] Fetching recent broadcasts...');
-      const response = await fetch('http://localhost:3001/api/broadcast/recent');
+      const { getApiBaseUrl } = await import('@/lib/apiUrl');
+      const response = await fetch(`${getApiBaseUrl()}/broadcast/recent`);
       if (!response.ok) throw new Error('Failed to fetch broadcasts');
       const data = await response.json();
       console.log('📢 [Broadcast] Got broadcasts:', data);
@@ -64,8 +66,9 @@ export default function Broadcast() {
   const sendBroadcastMutation = useMutation({
     mutationFn: async ({ subject, message }) => {
       console.log('📢 [Broadcast] Sending broadcast with subject:', subject);
+      const { getApiBaseUrl } = await import('@/lib/apiUrl');
       
-      const response = await fetch('http://localhost:3001/api/broadcast/send', {
+      const response = await fetch(`${getApiBaseUrl()}/broadcast/send`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -108,7 +111,7 @@ export default function Broadcast() {
   const deleteBroadcastMutation = useMutation({
     mutationFn: async (broadcastId) => {
       console.log('📢 [Broadcast] Deleting broadcast:', broadcastId);
-      const response = await fetch(`http://localhost:3001/api/entities/BroadcastMessage/${broadcastId}`, {
+      const response = await fetch(`${getApiBaseUrl()}/entities/BroadcastMessage/${broadcastId}`, {
         method: 'DELETE'
       });
       if (!response.ok) throw new Error('Failed to delete broadcast');

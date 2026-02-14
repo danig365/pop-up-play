@@ -7,6 +7,7 @@ import { Loader2, Mail, Lock } from 'lucide-react';
 import { useGoogleLogin } from '@react-oauth/google';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { getApiBaseUrl } from '@/lib/apiUrl';
 import { createPageUrl } from '@/utils';
 import logoImage from '@/assets/logo.jpeg';
 import PlayButtonRed from '@/assets/PlayButtonRed.jsx';
@@ -25,7 +26,7 @@ export default function Login() {
       console.log('[DEBUG GoogleAuth] Google login initiated');
       
       // Send the token to the backend
-      const response = await fetch('http://localhost:3001/api/auth/google', {
+      const response = await fetch(`${getApiBaseUrl()}/auth/google`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 

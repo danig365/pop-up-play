@@ -7,8 +7,18 @@
     <link rel="manifest" href="/manifest.json" />
     <title>Base44 APP</title>
     <script>
-      // Set API URL from environment
-      window.__apiUrl = 'http://localhost:3001/api';
+      // Dynamically set API URL based on current host
+      (function() {
+        const host = window.location.hostname;
+        const protocol = window.location.protocol;
+        
+        if (host === 'localhost' || host === '127.0.0.1') {
+          window.__apiUrl = 'http://localhost:3001/api';
+        } else {
+          // Use domain with HTTPS and Nginx proxy
+          window.__apiUrl = protocol + '//' + host + '/api';
+        }
+      })();
     </script>
   </head>
   <body>

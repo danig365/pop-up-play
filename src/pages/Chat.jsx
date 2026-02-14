@@ -6,6 +6,7 @@ import { motion } from 'framer-motion';
 import { ArrowLeft, MessageCircle, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Link } from 'react-router-dom';
+import { getApiBaseUrl } from '@/lib/apiUrl';
 import { createPageUrl } from '@/utils';
 import ChatList from '@/components/chat/ChatList';
 import ChatConversation from '@/components/chat/ChatConversation';
@@ -140,8 +141,7 @@ export default function Chat() {
           const senderProfile = profiles.find(p => p.user_email === user.email);
           const senderName = senderProfile?.display_name || user.email.split('@')[0] || 'Someone';
           
-          const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001/api';
-          await fetch(`${API_BASE_URL}/email/send-chat-notification`, {
+          await fetch(`${getApiBaseUrl()}/email/send-chat-notification`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({

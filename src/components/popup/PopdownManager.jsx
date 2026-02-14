@@ -1,6 +1,7 @@
 import React, { useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
 import { useQueryClient } from '@tanstack/react-query';
+import { getApiBaseUrl } from '@/lib/apiUrl';
 
 export default function PopdownManager() {
   const queryClient = useQueryClient();
@@ -31,7 +32,7 @@ export default function PopdownManager() {
             });
             
             navigator.sendBeacon(
-              `${base44.entities.UserProfile.tableName ? 'http://localhost:3001/api/entities/UserProfile/' + profiles[0].id : ''}`,
+              `${base44.entities.UserProfile.tableName ? getApiBaseUrl() + '/entities/UserProfile/' + profiles[0].id : ''}`,
               data
             );
           }
@@ -70,7 +71,7 @@ export default function PopdownManager() {
             popup_message: ''
           };
           
-          const updateUrl = `http://localhost:3001/api/entities/UserProfile/${profiles[0].id}`;
+          const updateUrl = `${getApiBaseUrl()}/entities/UserProfile/${profiles[0].id}`;
           navigator.sendBeacon(updateUrl, JSON.stringify(updateData));
         }
       } catch (error) {

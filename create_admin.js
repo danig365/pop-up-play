@@ -15,9 +15,9 @@ const pool = new Pool({
 });
 
 // Admin user credentials
-const ADMIN_EMAIL = 'admin@popupplay.com';
-const ADMIN_PASSWORD = 'Admin@123';  // Password must be at least 8 characters
-const ADMIN_NAME = 'Admin User';
+const ADMIN_EMAIL = 'gdanish365@gmail.com';
+const ADMIN_PASSWORD = '00000000';  // Password must be at least 8 characters
+const ADMIN_NAME = 'Danish';
 
 // Simple base64 encoding (matches server.js logic)
 const passwordHash = Buffer.from(ADMIN_PASSWORD).toString('base64');
