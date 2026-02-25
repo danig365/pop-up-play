@@ -7,28 +7,31 @@ import { Button } from '@/components/ui/button';
 
 export default function InactivityManager() {
   const lastActivityRef = useRef(Date.now());
+  const heartbeatDirtyRef = useRef(false);
+  const lastHeartbeatSentRef = useRef(0);
   const checkIntervalRef = useRef(null);
   const queryClient = useQueryClient();
   const [showWarning, setShowWarning] = useState(false);
-  const [timeRemaining, setTimeRemaining] = useState(600); // 10 minutes in seconds
+  const [timeRemaining, setTimeRemaining] = useState(600); // warning countdown in seconds
   const warningShownRef = useRef(false);
+
+  const INACTIVITY_MS = 24 * 60 * 60 * 1000;
+  const WARNING_MS = 10 * 60 * 1000;
+  const HEARTBEAT_INTERVAL_MS = 60 * 1000;
 
   useEffect(() => {
     const updateActivity = () => {
       lastActivityRef.current = Date.now();
+      heartbeatDirtyRef.current = true;
       // If warning is showing and user becomes active, hide it
       if (showWarning) {
         setShowWarning(false);
         warningShownRef.current = false;
-        setTimeRemaining(600);
+        setTimeRemaining(Math.ceil(WARNING_MS / 1000));
       }
     };
 
     const checkInactivity = async () => {
-      const inactiveTime = Date.now() - lastActivityRef.current;
-      const twoHours = 2 * 60 * 60 * 1000; // 2 hours in milliseconds
-      const warningTime = 110 * 60 * 1000; // 1 hour 50 minutes in milliseconds
-
       // Check if user is popped up first
       try {
         const user = await base44.auth.me();
@@ -37,20 +40,45 @@ export default function InactivityManager() {
         const profiles = await base44.entities.UserProfile.filter({ 
           user_email: user.email 
         });
+
+        const profile = profiles[0];
         
-        if (profiles.length === 0 || !profiles[0].is_popped_up) {
+        if (profiles.length === 0 || !profile.is_popped_up) {
           // User not popped up, no need for warning
           if (showWarning) {
             setShowWarning(false);
             warningShownRef.current = false;
           }
+          heartbeatDirtyRef.current = false;
           return;
         }
 
-        // User is popped up - check inactivity
-        if (inactiveTime >= twoHours) {
-          // Auto pop-down after 2 hours
-          await base44.entities.UserProfile.update(profiles[0].id, { 
+        const now = Date.now();
+        const persistedActivityTs = new Date(
+          profile.last_location_update || profile.updated_date || profile.created_date || now
+        ).getTime();
+        const normalizedPersistedTs = Number.isNaN(persistedActivityTs) ? now : persistedActivityTs;
+
+        if (normalizedPersistedTs > lastActivityRef.current) {
+          lastActivityRef.current = normalizedPersistedTs;
+        }
+
+        if (
+          heartbeatDirtyRef.current &&
+          now - lastHeartbeatSentRef.current >= HEARTBEAT_INTERVAL_MS
+        ) {
+          await base44.entities.UserProfile.update(profile.id, {
+            last_location_update: new Date(now).toISOString()
+          });
+          lastHeartbeatSentRef.current = now;
+          heartbeatDirtyRef.current = false;
+          queryClient.invalidateQueries({ queryKey: ['myProfile'] });
+        }
+
+        const inactiveTime = now - lastActivityRef.current;
+
+        if (inactiveTime >= INACTIVITY_MS) {
+          await base44.entities.UserProfile.update(profile.id, {
             is_popped_up: false,
             popup_message: ''
           });
@@ -58,17 +86,15 @@ export default function InactivityManager() {
           queryClient.invalidateQueries({ queryKey: ['activeUsers'] });
           setShowWarning(false);
           warningShownRef.current = false;
-          console.log('⏰ [InactivityManager] Auto pop-down after 2 hours of inactivity');
-        } else if (inactiveTime >= warningTime && !warningShownRef.current) {
-          // Show warning at 1h 50min
+          console.log('⏰ [InactivityManager] Auto pop-down after 24 hours of inactivity');
+        } else if (inactiveTime >= INACTIVITY_MS - WARNING_MS && !warningShownRef.current) {
           warningShownRef.current = true;
           setShowWarning(true);
-          const remaining = Math.ceil((twoHours - inactiveTime) / 1000);
+          const remaining = Math.ceil((INACTIVITY_MS - inactiveTime) / 1000);
           setTimeRemaining(remaining);
           console.log('⚠️ [InactivityManager] Warning: popup will expire in', remaining, 'seconds');
         } else if (showWarning) {
-          // Update countdown
-          const remaining = Math.ceil((twoHours - inactiveTime) / 1000);
+          const remaining = Math.ceil((INACTIVITY_MS - inactiveTime) / 1000);
           setTimeRemaining(Math.max(0, remaining));
         }
       } catch (error) {
@@ -82,8 +108,8 @@ export default function InactivityManager() {
       document.addEventListener(event, updateActivity);
     });
 
-    // Check inactivity every 10 seconds for more responsive countdown
-    checkIntervalRef.current = setInterval(checkInactivity, 10000);
+    // Check inactivity every 30 seconds
+    checkIntervalRef.current = setInterval(checkInactivity, 30000);
 
     return () => {
       events.forEach(event => {
@@ -93,7 +119,7 @@ export default function InactivityManager() {
         clearInterval(checkIntervalRef.current);
       }
     };
-  }, [queryClient, showWarning]);
+  }, [queryClient, showWarning, HEARTBEAT_INTERVAL_MS, INACTIVITY_MS, WARNING_MS]);
 
   const formatTime = (seconds) => {
     const mins = Math.floor(seconds / 60);
@@ -103,9 +129,10 @@ export default function InactivityManager() {
 
   const handleStayActive = () => {
     lastActivityRef.current = Date.now();
+    heartbeatDirtyRef.current = true;
     setShowWarning(false);
     warningShownRef.current = false;
-    setTimeRemaining(600);
+    setTimeRemaining(Math.ceil(WARNING_MS / 1000));
   };
 
   return (
@@ -127,7 +154,7 @@ export default function InactivityManager() {
                   Inactivity Warning
                 </h3>
                 <p className="text-amber-800 text-xs mt-1">
-                  Your popup request will automatically pop down due to inactivity.
+                  Your popup will automatically pop down after 24 hours of inactivity.
                 </p>
                 <div className="flex items-center gap-2 mt-3">
                   <Clock className="w-4 h-4 text-amber-600" />

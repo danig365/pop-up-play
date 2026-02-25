@@ -6,7 +6,7 @@ import { motion } from 'framer-motion';
 import { Check, Loader2, Crown, Clock, ArrowLeft, Key } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { getApiBaseUrl } from '@/lib/apiUrl';
 import { createPageUrl } from '@/utils';
 
@@ -18,6 +18,13 @@ export default function Pricing() {
   const [paypalLoaded, setPaypalLoaded] = useState(false);
   const paypalButtonRef = useRef(null);
   const navigate = useNavigate();
+  const location = useLocation();
+
+  const returnTo =
+    location.state?.returnTo ||
+    new URLSearchParams(location.search).get('returnTo') ||
+    '';
+  const backTarget = returnTo || createPageUrl('Menu');
 
   useEffect(() => {
     const loadUser = async () => {
@@ -149,7 +156,9 @@ export default function Pricing() {
             console.log('✅ Payment successful:', captureData);
             toast.success('Payment successful! Welcome to Premium!');
             refetchSubscription();
-            navigate(createPageUrl('SubscriptionSuccess'));
+            navigate(createPageUrl('SubscriptionSuccess'), {
+              state: { returnTo },
+            });
           } catch (error) {
             console.error('Capture error:', error);
             toast.error('Payment verification failed. Please contact support.');
@@ -171,7 +180,9 @@ export default function Pricing() {
   }, [paypalLoaded, user, settings, subscription, navigate, refetchSubscription]);
 
   const handleAccessCode = () => {
-    navigate(createPageUrl('EnterAccessCode'));
+    navigate(createPageUrl('EnterAccessCode'), {
+      state: { returnTo },
+    });
   };
 
   if (!user || !settings) {
@@ -191,11 +202,14 @@ export default function Pricing() {
       {/* Header */}
       <header className="sticky top-0 z-50 bg-white/80 backdrop-blur-lg border-b border-slate-100">
         <div className="max-w-2xl mx-auto px-4 py-4 flex items-center justify-between">
-          <Link to={createPageUrl('Menu')}>
-            <Button variant="ghost" size="icon" className="rounded-full">
-              <ArrowLeft className="w-5 h-5" />
-            </Button>
-          </Link>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="rounded-full"
+            onClick={() => navigate(backTarget)}
+          >
+            <ArrowLeft className="w-5 h-5" />
+          </Button>
           <h1 className="text-lg font-semibold text-slate-800">Pricing</h1>
           <div className="w-9"></div>
         </div>

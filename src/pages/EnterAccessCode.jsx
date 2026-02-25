@@ -1,19 +1,26 @@
 import React, { useState, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
 import { ArrowLeft, Key, Loader2, CheckCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Link, useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { createPageUrl } from '@/utils';
 import { toast } from 'sonner';
+import { getApiBaseUrl } from '@/lib/apiUrl';
 
 export default function EnterAccessCode() {
   const [user, setUser] = useState(null);
   const [code, setCode] = useState('');
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const location = useLocation();
+  const returnTo =
+    location.state?.returnTo ||
+    new URLSearchParams(location.search).get('returnTo') ||
+    '';
+  const backTarget = returnTo || createPageUrl('Menu');
 
   useEffect(() => {
     const loadUser = async () => {
@@ -27,74 +34,35 @@ export default function EnterAccessCode() {
     loadUser();
   }, []);
 
-  const { data: mySubscription } = useQuery({
-    queryKey: ['userSubscription', user?.email],
-    queryFn: async () => {
-      if (!user) return null;
-      const subs = await base44.entities.UserSubscription.filter({
-        user_email: user.email
-      });
-      return subs[0] || null;
-    },
-    enabled: !!user
-  });
-
   const redeemMutation = useMutation({
     mutationFn: async (codeValue) => {
-      const code = String(codeValue);
-      console.log('🔑 [EnterAccessCode] Attempting to redeem code:', code);
+      const codeStr = String(codeValue).trim().toUpperCase();
+      console.log('🔑 [EnterAccessCode] Attempting to redeem code via secure endpoint:', codeStr);
       
-      const codes = await base44.entities.AccessCode.filter({ 
-        code: code.toUpperCase(),
-        is_used: false
+      // Use the dedicated secure redeem endpoint instead of direct entity access
+      const response = await fetch(`${getApiBaseUrl()}/access-code/redeem`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-user-email': user.email
+        },
+        body: JSON.stringify({ code: codeStr })
       });
+
+      const result = await response.json();
       
-      console.log('🔑 [EnterAccessCode] Filter result:', codes);
-      
-      if (codes.length === 0) {
-        throw new Error('Invalid or already used code');
+      if (!response.ok) {
+        throw new Error(result.error || 'Failed to redeem code');
       }
 
-      const accessCode = codes[0];
-      
-      if (accessCode.valid_until && new Date(accessCode.valid_until) < new Date()) {
-        throw new Error('This code has expired');
-      }
-
-      console.log('🔑 [EnterAccessCode] Marking code as used...');
-      await base44.entities.AccessCode.update(accessCode.id, {
-        is_used: true,
-        used_by: user.email,
-        used_at: new Date().toISOString()
-      });
-      console.log('🔑 [EnterAccessCode] Code marked as used');
-
-      console.log('🔑 [EnterAccessCode] Creating/updating subscription...');
-      if (mySubscription) {
-        console.log('🔑 [EnterAccessCode] Updating existing subscription:', mySubscription.id);
-        await base44.entities.UserSubscription.update(mySubscription.id, {
-          status: 'active',
-          start_date: new Date().toISOString(),
-          end_date: accessCode.valid_until
-        });
-      } else {
-        console.log('🔑 [EnterAccessCode] Creating new subscription...');
-        await base44.entities.UserSubscription.create({
-          user_email: user.email,
-          status: 'active',
-          start_date: new Date().toISOString(),
-          end_date: accessCode.valid_until
-        });
-      }
-      console.log('🔑 [EnterAccessCode] Subscription created/updated');
-
-      return accessCode;
+      console.log('🔑 [EnterAccessCode] Code redeemed successfully:', result);
+      return result;
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['userSubscription'] });
       toast.success('Access code redeemed successfully!');
       setTimeout(() => {
-        navigate(createPageUrl('Home'));
+        navigate(returnTo || createPageUrl('Home'));
       }, 2000);
     },
     onError: (error) => {
@@ -124,11 +92,14 @@ export default function EnterAccessCode() {
     <div className="min-h-screen bg-gradient-to-br from-violet-50 via-white to-rose-50">
       <header className="sticky top-0 z-50 bg-white/80 backdrop-blur-lg border-b border-slate-100">
         <div className="max-w-2xl mx-auto px-4 py-4 flex items-center justify-between">
-          <Link to={createPageUrl('Menu')}>
-            <Button variant="ghost" size="icon" className="rounded-full">
-              <ArrowLeft className="w-5 h-5" />
-            </Button>
-          </Link>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="rounded-full"
+            onClick={() => navigate(backTarget)}
+          >
+            <ArrowLeft className="w-5 h-5" />
+          </Button>
           <h1 className="text-lg font-semibold text-slate-800">Enter Access Code</h1>
           <div className="w-10"></div>
         </div>

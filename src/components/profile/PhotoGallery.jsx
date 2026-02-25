@@ -9,6 +9,7 @@ import { DragDropContext, Droppable, Draggable } from '@hello-pangea/dnd';
 export default function PhotoGallery({ photos = [], onPhotosChange, editable = true }) {
   const [uploading, setUploading] = useState(false);
   const [selectedPhoto, setSelectedPhoto] = useState(null);
+  const [deleteConfirm, setDeleteConfirm] = useState(null);
 
   const handleUpload = async (e) => {
     const files = Array.from(e.target.files || []);
@@ -51,8 +52,15 @@ export default function PhotoGallery({ photos = [], onPhotosChange, editable = t
   };
 
   const handleRemove = (index) => {
-    const newPhotos = photos.filter((_, i) => i !== index);
-    onPhotosChange(newPhotos);
+    setDeleteConfirm(index);
+  };
+
+  const confirmDelete = () => {
+    if (deleteConfirm !== null) {
+      const newPhotos = photos.filter((_, i) => i !== deleteConfirm);
+      onPhotosChange(newPhotos);
+      setDeleteConfirm(null);
+    }
   };
 
   const handleDragEnd = (result) => {
@@ -181,6 +189,44 @@ export default function PhotoGallery({ photos = [], onPhotosChange, editable = t
             >
               <X className="w-6 h-6 text-white" />
             </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Delete Confirmation Dialog */}
+      <AnimatePresence>
+        {deleteConfirm !== null && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"
+          >
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="bg-white rounded-lg shadow-lg p-6 max-w-sm w-full"
+            >
+              <h2 className="text-lg font-semibold text-slate-800 mb-2">Delete Photo?</h2>
+              <p className="text-slate-600 text-sm mb-6">
+                This action cannot be undone. This photo will be permanently removed from your profile.
+              </p>
+              <div className="flex gap-3 justify-end">
+                <button
+                  onClick={() => setDeleteConfirm(null)}
+                  className="px-4 py-2 text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg font-medium transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={confirmDelete}
+                  className="px-4 py-2 text-white bg-red-600 hover:bg-red-700 rounded-lg font-medium transition-colors"
+                >
+                  Delete
+                </button>
+              </div>
+            </motion.div>
           </motion.div>
         )}
       </AnimatePresence>

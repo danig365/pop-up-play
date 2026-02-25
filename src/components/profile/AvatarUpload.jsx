@@ -27,7 +27,7 @@ export default function AvatarUpload({ currentAvatar, onAvatarChange }) {
     >
       <div className="w-32 h-32 rounded-full overflow-hidden border-4 border-white shadow-xl">
         <img
-          src={currentAvatar || 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=200&h=200&fit=crop'}
+          src={currentAvatar || `data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect fill='%23ddd6fe' width='100' height='100'/%3E%3Ccircle cx='50' cy='38' r='18' fill='%23a78bfa'/%3E%3Cellipse cx='50' cy='80' rx='28' ry='22' fill='%23a78bfa'/%3E%3C/svg%3E`}
           alt="Profile"
           className="w-full h-full object-cover"
         />

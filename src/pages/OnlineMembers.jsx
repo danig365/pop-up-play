@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input';
 import { Link, useNavigate } from 'react-router-dom';
 import { createPageUrl } from '@/utils';
 import BlockButton from '@/components/blocking/BlockButton';
+import { useSubscription } from '@/lib/SubscriptionContext';
 
 // Calculate distance between two coordinates in miles
 const calculateDistance = (lat1, lon1, lat2, lon2) => {
@@ -30,6 +31,7 @@ export default function OnlineMembers() {
   const [backUrl, setBackUrl] = useState('Menu');
   const [geocodedCities, setGeocodedCities] = useState({});
   const navigate = useNavigate();
+  const { guardAction } = useSubscription();
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -63,6 +65,11 @@ export default function OnlineMembers() {
   const { data: activeProfiles = [], isLoading } = useQuery({
     queryKey: ['activeProfiles'],
     queryFn: async () => {
+      try {
+        await base44.functions.invoke('cleanupStalePopups', {});
+      } catch (error) {
+        console.warn('Failed to cleanup stale popups:', error?.message || error);
+      }
       const profiles = await base44.entities.UserProfile.filter({ is_popped_up: true });
       return profiles;
     },
@@ -149,11 +156,13 @@ export default function OnlineMembers() {
   }
 
   const handleVideoCall = (otherUserEmail) => {
+    if (!guardAction('make video calls')) return;
     const callId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     navigate(createPageUrl('VideoCall') + `?user=${otherUserEmail}&callId=${callId}&from=onlinemembers`);
   };
 
   const handleChat = (otherUserEmail) => {
+    if (!guardAction('send messages')) return;
     navigate(createPageUrl('Chat') + `?user=${otherUserEmail}&from=onlinemembers`);
   };
 
@@ -186,7 +195,7 @@ export default function OnlineMembers() {
             <div className="flex items-center gap-3">
               <Filter className="w-5 h-5 text-purple-600" />
               <Input
-                placeholder="Filter by interests (e.g., hiking, cooking)..."
+                placeholder="Filter by interests (e.g., Couples, BBC, Unicorns)..."
                 value={interestFilter}
                 onChange={(e) => setInterestFilter(e.target.value)}
                 className="flex-1 rounded-xl border-purple-300 focus:border-purple-500" />
@@ -243,10 +252,13 @@ export default function OnlineMembers() {
                 {/* Profile Image */}
                 <div 
                   className="relative h-64 bg-gradient-to-br from-violet-100 to-rose-100 cursor-pointer"
-                  onClick={() => navigate(createPageUrl('Profile') + '?user=' + profile.user_email + '&back=OnlineMembers')}
+                  onClick={() => {
+                    if (!guardAction('view full profiles')) return;
+                    navigate(createPageUrl('Profile') + '?user=' + profile.user_email + '&back=OnlineMembers');
+                  }}
                 >
                   <img
-                    src={profile.avatar_url || 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=400&h=400&fit=crop'}
+                    src={profile.avatar_url || `data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect fill='%23ddd6fe' width='100' height='100'/%3E%3Ccircle cx='50' cy='38' r='18' fill='%23a78bfa'/%3E%3Cellipse cx='50' cy='80' rx='28' ry='22' fill='%23a78bfa'/%3E%3C/svg%3E`}
                     alt={profile.display_name}
                     className="w-full h-full object-cover"
                   />
@@ -327,11 +339,11 @@ export default function OnlineMembers() {
                       <MessageCircle className="w-4 h-4" />
                       Chat
                     </Button>
-                    <BlockButton 
+                    {/* <BlockButton 
                       targetUserEmail={profile.user_email} 
                       currentUserEmail={user?.email}
                       variant="outline"
-                    />
+                    /> */}
                   </div>
                   {profile.isBlocked && (
                     <div className="mt-2 text-center">

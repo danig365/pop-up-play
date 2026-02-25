@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input';
 import { Link, useNavigate } from 'react-router-dom';
 import { createPageUrl } from '@/utils';
 import BlockButton from '@/components/blocking/BlockButton';
+import { useSubscription } from '@/lib/SubscriptionContext';
 
 // State name to abbreviation mapping
 const stateMapping = {
@@ -74,6 +75,7 @@ export default function AllProfiles() {
   const [locationFilter, setLocationFilter] = useState('');
   const [profilesWithDistance, setProfilesWithDistance] = useState([]);
   const navigate = useNavigate();
+  const { guardAction } = useSubscription();
 
   useEffect(() => {
     const loadUser = async () => {
@@ -121,13 +123,13 @@ export default function AllProfiles() {
   // Calculate distances based on ZIP codes
   useEffect(() => {
     const calculateDistances = async () => {
-      if (!myProfile?.current_zip) {
+      if (!myProfile?.zip_code) {
         setProfilesWithDistance(allProfiles);
         return;
       }
       
       // Geocode user's ZIP
-      const myCoords = await geocodeZip(myProfile.current_zip, myProfile.current_country || 'US');
+      const myCoords = await geocodeZip(myProfile.zip_code, myProfile.country || 'US');
       if (!myCoords) {
         setProfilesWithDistance(allProfiles);
         return;
@@ -136,11 +138,11 @@ export default function AllProfiles() {
       // Calculate distances for all profiles
       const profilesWithDist = await Promise.all(
         allProfiles.map(async (profile) => {
-          if (!profile.current_zip) {
+          if (!profile.zip_code) {
             return { ...profile, zipDistance: null };
           }
           
-          const profileCoords = await geocodeZip(profile.current_zip, profile.current_country || 'US');
+          const profileCoords = await geocodeZip(profile.zip_code, profile.country || 'US');
           if (!profileCoords) {
             return { ...profile, zipDistance: null };
           }
@@ -163,8 +165,8 @@ export default function AllProfiles() {
   }, [allProfiles, myProfile]);
 
   const sortedProfiles = React.useMemo(() => {
-    let profiles = [...profilesWithDistance]
-      .filter(p => p.user_email !== user?.email); // Exclude own profile
+    const selfProfile = profilesWithDistance.find(p => p.user_email === user?.email) || null;
+    let profiles = profilesWithDistance.filter(p => p.user_email !== user?.email);
     
     // Filter by interests
     if (interestFilter.trim()) {
@@ -179,10 +181,10 @@ export default function AllProfiles() {
     if (locationFilter.trim()) {
       profiles = profiles.filter(p => {
         const searchTerm = locationFilter.toLowerCase();
-        const city = (p.current_city || '').toLowerCase();
-        const state = (p.current_state || '').toLowerCase();
-        const zip = (p.current_zip || '').toLowerCase();
-        const country = (p.current_country || '').toLowerCase();
+        const city = (p.city || '').toLowerCase();
+        const state = (p.state || '').toLowerCase();
+        const zip = (p.zip_code || '').toLowerCase();
+        const country = (p.country || '').toLowerCase();
         
         // Check if search term is a state name or abbreviation
         const stateAbbrev = stateMapping[searchTerm];
@@ -198,10 +200,14 @@ export default function AllProfiles() {
     
     // Sort by ZIP code distance
     profiles.sort((a, b) => {
+      // Always show current user's profile first
+      if (a.user_email === user?.email) return -1;
+      if (b.user_email === user?.email) return 1;
+
       if (a.zipDistance === null && b.zipDistance === null) {
         // Both have no distance, sort alphabetically
-        const aLocation = `${a.current_city || ''} ${a.current_state || ''}`.trim();
-        const bLocation = `${b.current_city || ''} ${b.current_state || ''}`.trim();
+        const aLocation = `${a.city || ''} ${a.state || ''}`.trim();
+        const bLocation = `${b.city || ''} ${b.state || ''}`.trim();
         return aLocation.localeCompare(bLocation);
       }
       if (a.zipDistance === null) return 1; // a goes to end
@@ -209,8 +215,8 @@ export default function AllProfiles() {
       return a.zipDistance - b.zipDistance; // Sort by distance ascending
     });
     
-    return profiles;
-  }, [profilesWithDistance, blockedUsers, interestFilter, locationFilter]);
+    return selfProfile ? [selfProfile, ...profiles] : profiles;
+  }, [profilesWithDistance, blockedUsers, interestFilter, locationFilter, user?.email]);
 
   if (!user || isLoading) {
     return (
@@ -246,7 +252,7 @@ export default function AllProfiles() {
             <div className="flex items-center gap-3">
               <Filter className="w-5 h-5 text-purple-600" />
               <Input
-                placeholder="Filter by interests (e.g., hiking, cooking)..."
+                placeholder="Filter by interests (e.g., Couples, BBC, Unicorns)..."
                 value={interestFilter}
                 onChange={(e) => setInterestFilter(e.target.value)}
                 className="flex-1 rounded-xl border-purple-200 focus:border-purple-400" />
@@ -309,13 +315,16 @@ export default function AllProfiles() {
                 transition={{ delay: index * 0.05 }}
                 whileHover={{ scale: 1.02 }}
                 className="cursor-pointer"
-                onClick={() => navigate(createPageUrl('Profile') + '?user=' + profile.user_email + '&back=AllProfiles')}
+                onClick={() => {
+                  if (!guardAction('view full profiles')) return;
+                  navigate(createPageUrl('Profile') + '?user=' + profile.user_email + '&back=AllProfiles');
+                }}
               >
                 <div className="bg-white rounded-2xl shadow-lg overflow-hidden">
                   {/* Avatar */}
                   <div className="aspect-square relative">
                     <img
-                      src={profile.avatar_url || 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=400&h=400&fit=crop'}
+                      src={profile.avatar_url || `data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect fill='%23ddd6fe' width='100' height='100'/%3E%3Ccircle cx='50' cy='38' r='18' fill='%23a78bfa'/%3E%3Cellipse cx='50' cy='80' rx='28' ry='22' fill='%23a78bfa'/%3E%3C/svg%3E`}
                       alt={profile.display_name}
                       className="w-full h-full object-cover"
                     />
@@ -326,28 +335,37 @@ export default function AllProfiles() {
 
                   {/* Info */}
                   <div className="p-4">
-                    <h3 className="text-lg font-semibold text-slate-800 mb-1">
-                      {profile.display_name || 'Anonymous'}
-                      {profile.age && <span className="text-slate-500">, {profile.age}</span>}
-                    </h3>
-                    
-                    <div className="flex items-center gap-2 text-sm text-slate-500 mb-2 flex-wrap">
-                      {(profile.current_city || profile.current_state || profile.current_country) && (
-                        <div className="flex items-center gap-1">
-                          <MapPin className="w-4 h-4 text-purple-600" />
-                          <span>
-                            {[profile.current_city, profile.current_state, profile.current_country]
-                              .filter(Boolean)
-                              .join(', ')}
-                          </span>
-                        </div>
-                      )}
-                      {profile.zipDistance !== null && profile.zipDistance !== undefined && (
-                        <span className="text-purple-600 font-semibold">
-                          • {profile.zipDistance.toFixed(1)} mi
+                    <div className="flex items-center gap-2 mb-1">
+                      <h3 className="text-lg font-semibold text-slate-800">
+                        {profile.display_name || 'Anonymous'}
+                        {profile.age && <span className="text-slate-500">, {profile.age}</span>}
+                      </h3>
+                      {profile.user_email === user?.email && (
+                        <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-violet-100 text-violet-700">
+                          You
                         </span>
                       )}
-                      <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${
+                    </div>
+                    
+                    <div className="flex items-center justify-between text-sm text-slate-500 mb-2">
+                      <div className="flex items-center gap-1 min-w-0 flex-1">
+                        {(profile.city || profile.state || profile.country) && (
+                          <>
+                            <MapPin className="w-4 h-4 text-purple-600 flex-shrink-0" />
+                            <span className="truncate">
+                              {[profile.city, profile.state, profile.country]
+                                .filter(Boolean)
+                                .join(' , ')}
+                            </span>
+                          </>
+                        )}
+                        {profile.zipDistance !== null && profile.zipDistance !== undefined && (
+                          <span className="text-purple-600 font-semibold flex-shrink-0 ml-1">
+                            • {profile.zipDistance.toFixed(1)} mi
+                          </span>
+                        )}
+                      </div>
+                      <span className={`ml-2 px-2 py-0.5 rounded-full text-xs font-medium whitespace-nowrap flex-shrink-0 ${
                         profile.is_popped_up 
                           ? 'bg-green-100 text-green-700' 
                           : 'bg-slate-100 text-slate-500'
@@ -382,15 +400,6 @@ export default function AllProfiles() {
                         </p>
                       </div>
                     )}
-
-                    {/* Action Buttons */}
-                    <div className="mt-4">
-                      <BlockButton 
-                        targetUserEmail={profile.user_email} 
-                        currentUserEmail={user?.email}
-                        variant="outline"
-                      />
-                    </div>
                   </div>
                   {blockedUsers.some(b => b.blocked_email === profile.user_email) && (
                     <div className="absolute inset-0 bg-black/20 rounded-2xl flex items-center justify-center">

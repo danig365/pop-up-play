@@ -3,7 +3,7 @@ import React, { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
 import { CheckCircle, ArrowRight, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, useLocation, useSearchParams } from 'react-router-dom';
 import { createPageUrl } from '@/utils';
 import { base44 } from '@/api/base44Client';
 import { useQuery } from '@tanstack/react-query';
@@ -11,6 +11,11 @@ import { useQuery } from '@tanstack/react-query';
 export default function SubscriptionSuccess() {
   const [searchParams] = useSearchParams();
   const [user, setUser] = useState(null);
+  const location = useLocation();
+  const returnTo =
+    location.state?.returnTo ||
+    new URLSearchParams(location.search).get('returnTo') ||
+    '';
 
   useEffect(() => {
     const loadUser = async () => {
@@ -129,7 +134,7 @@ export default function SubscriptionSuccess() {
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.5 }}
         >
-          <Link to={createPageUrl('Home')}>
+          <Link to={returnTo || createPageUrl('Home')}>
             <Button className="bg-gradient-to-r from-violet-600 to-purple-600 hover:from-violet-700 hover:to-purple-700 text-white px-8 py-6 text-lg rounded-xl">
               Start Exploring
               <ArrowRight className="w-5 h-5 ml-2" />

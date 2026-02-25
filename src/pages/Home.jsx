@@ -15,6 +15,7 @@ import { Button } from '@/components/ui/button';
 import { useNavigate } from 'react-router-dom';
 import ScrollControl from '@/components/map/ScrollControl';
 import NavigationMenu from '@/components/navigation/NavigationMenu';
+import { useSubscription } from '@/lib/SubscriptionContext';
 
 export default function Home() {
   const [user, setUser] = useState(null);
@@ -22,6 +23,7 @@ export default function Home() {
   const [isUpdating, setIsUpdating] = useState(false);
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const { guardAction } = useSubscription();
 
   useEffect(() => {
     const loadUser = async () => {
@@ -35,7 +37,7 @@ export default function Home() {
     loadUser();
   }, []);
 
-  const { data: myProfile } = useQuery({
+  const { data: myProfile, isLoading: profileLoading } = useQuery({
     queryKey: ['myProfile', user?.email],
     queryFn: async () => {
       if (!user?.email) return null;
@@ -48,6 +50,11 @@ export default function Home() {
   const { data: activeUsers = [] } = useQuery({
     queryKey: ['activeUsers'],
     queryFn: async () => {
+      try {
+        await base44.functions.invoke('cleanupStalePopups', {});
+      } catch (error) {
+        console.warn('Failed to cleanup stale popups:', error?.message || error);
+      }
       const profiles = await base44.entities.UserProfile.filter({ is_popped_up: true });
       return profiles;
     },
@@ -110,6 +117,7 @@ export default function Home() {
   }, [myProfile?.popup_message]);
 
   const handlePopToggle = async (isPopping) => {
+    if (isPopping && !guardAction('pop up on the map')) return;
     if (isPopping && !popupMessage.trim()) {
       return; // Don't allow popping up without a message
     }
@@ -117,12 +125,13 @@ export default function Home() {
     setIsUpdating(true);
     await updateProfileMutation.mutateAsync({
       is_popped_up: isPopping,
-      popup_message: isPopping ? popupMessage : ''
+      popup_message: isPopping ? popupMessage : '',
+      last_location_update: isPopping ? new Date().toISOString() : myProfile?.last_location_update
     });
     setIsUpdating(false);
   };
 
-  if (!user) {
+  if (!user || profileLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-violet-50 via-white to-rose-50">
         <div className="animate-pulse flex flex-col items-center">
@@ -150,7 +159,7 @@ export default function Home() {
             <Link to={createPageUrl('Profile')}>
               <div className="w-10 h-10 rounded-full overflow-hidden border-2 border-violet-200">
                 <img
-                  src={myProfile?.avatar_url || 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=100&h=100&fit=crop'}
+                  src={myProfile?.avatar_url || `data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect fill='%23ddd6fe' width='100' height='100'/%3E%3Ccircle cx='50' cy='38' r='18' fill='%23a78bfa'/%3E%3Cellipse cx='50' cy='80' rx='28' ry='22' fill='%23a78bfa'/%3E%3C/svg%3E`}
                   alt="Profile"
                   className="w-full h-full object-cover" />
 
@@ -208,7 +217,10 @@ export default function Home() {
               activeUsers={activeUsers}
               currentUserProfile={myProfile}
               userLocation={userLocation}
-              onProfileClick={(profile) => navigate(createPageUrl('Profile') + '?user=' + profile.user_email)} />
+              onProfileClick={(profile) => {
+                if (!guardAction('view full profiles')) return;
+                navigate(createPageUrl('Profile') + '?user=' + profile.user_email);
+              }} />
 
             <ScrollControl />
           </motion.div>
@@ -223,7 +235,7 @@ export default function Home() {
             {!myProfile?.display_name ?
             <div className="flex justify-center">
                 <Link to={createPageUrl('Profile')}>
-                  <Button className="px-8 py-6 text-lg rounded-full bg-gradient-to-r from-violet-600 to-purple-600 shadow-xl hover:shadow-2xl">
+                  <Button className="px-8 py-6 text-lg rounded-full bg-gradient-to-r from-violet-600 to-purple-600 text-white shadow-xl hover:shadow-2xl">
                     <User className="w-5 h-5 mr-2" />
                     Complete Your Profile First
                   </Button>
@@ -242,8 +254,7 @@ export default function Home() {
                     <Textarea
                   value={popupMessage}
                   onChange={(e) => setPopupMessage(e.target.value)}
-                  placeholder="E.g., Looking for someone to grab coffee with tonight..." className="bg-slate-50 text-black px-3 py-2 text-base rounded-xl flex min-h-[60px] w-full border shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 md:text-sm resize-none border-violet-200 focus:border-violet-400"
-
+                  placeholder="E.g., Looking for someone to play with tonight..." className="bg-slate-50 text-black px-3 py-2 text-base rounded-xl flex min-h-[60px] w-full border shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 md:text-sm resize-none border-violet-200 focus:border-violet-400"
                   rows={2}
                   disabled={isUpdating} />
 

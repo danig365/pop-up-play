@@ -1,12 +1,71 @@
-import React, { useState } from 'react';
-import { motion } from 'framer-motion';
-import { Plus, X, Video, Loader2, Play } from 'lucide-react';
+import React, { useState, useRef, useCallback } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { Plus, X, Video, Loader2, Play, Maximize, Minimize, Pause } from 'lucide-react';
 import { base44 } from '@/api/base44Client';
 import { toast } from 'sonner';
 
 export default function VideoGallery({ videos = [], onVideosChange, editable = true }) {
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [fullscreenVideo, setFullscreenVideo] = useState(null);
+  const [videoErrors, setVideoErrors] = useState({});
+  const [playingVideos, setPlayingVideos] = useState({});
+  const [deleteConfirm, setDeleteConfirm] = useState(null);
+  const videoRefs = useRef({});
+  const fullscreenVideoRef = useRef(null);
+  const [pushLoading, setPushLoading] = useState(null); // index of video being pushed
+  const [userEmail, setUserEmail] = useState(null);
+
+  // Get user email from parent Profile page
+  React.useEffect(() => {
+    async function fetchUser() {
+      try {
+        const currentUser = await base44.auth.me();
+        setUserEmail(currentUser.email);
+      } catch (err) {
+        setUserEmail(null);
+      }
+    }
+    fetchUser();
+  }, []);
+
+  const handleVideoError = (index, e) => {
+    console.error(`Video ${index} failed to load:`, e.target.error);
+    setVideoErrors(prev => ({ ...prev, [index]: true }));
+  };
+
+  const handleVideoLoaded = (index) => {
+    setVideoErrors(prev => ({ ...prev, [index]: false }));
+  };
+
+  const togglePlay = (index) => {
+    const video = videoRefs.current[index];
+    if (!video) return;
+    if (video.paused) {
+      video.play().catch(err => console.error('Play failed:', err));
+      setPlayingVideos(prev => ({ ...prev, [index]: true }));
+    } else {
+      video.pause();
+      setPlayingVideos(prev => ({ ...prev, [index]: false }));
+    }
+  };
+
+  const openFullscreen = (videoSrc, index) => {
+    // Pause the inline video before opening overlay
+    const inlineVideo = videoRefs.current[index];
+    if (inlineVideo && !inlineVideo.paused) {
+      inlineVideo.pause();
+    }
+    setFullscreenVideo(videoSrc);
+  };
+
+  const closeFullscreen = () => {
+    // Pause the fullscreen video before closing
+    if (fullscreenVideoRef.current) {
+      fullscreenVideoRef.current.pause();
+    }
+    setFullscreenVideo(null);
+  };
 
   const handleUpload = async (e) => {
     const file = e.target.files?.[0];
@@ -66,8 +125,15 @@ export default function VideoGallery({ videos = [], onVideosChange, editable = t
   };
 
   const handleRemove = (index) => {
-    const newVideos = videos.filter((_, i) => i !== index);
-    onVideosChange(newVideos);
+    setDeleteConfirm(index);
+  };
+
+  const confirmDelete = () => {
+    if (deleteConfirm !== null) {
+      const newVideos = videos.filter((_, i) => i !== deleteConfirm);
+      onVideosChange(newVideos);
+      setDeleteConfirm(null);
+    }
   };
 
   return (
@@ -83,34 +149,108 @@ export default function VideoGallery({ videos = [], onVideosChange, editable = t
           </ul>
         </div>
       )}
-      <div className="grid grid-cols-2 gap-3">
+      <div className="space-y-4">
         {videos.map((video, index) => (
           <motion.div
             key={index}
             layout
             initial={{ opacity: 0, scale: 0.8 }}
             animate={{ opacity: 1, scale: 1 }}
-            className="relative aspect-video rounded-xl overflow-hidden group bg-slate-900"
+            className="bg-white rounded-lg overflow-hidden"
           >
-            <video 
-              src={video}
-              className="w-full h-full object-cover"
-              controls
-              controlsList="nodownload"
-              onContextMenu={(e) => e.preventDefault()}
-              style={{ userSelect: 'none', WebkitUserDrag: 'none' }}
-            />
-            {editable && (
-              <button
-                onClick={() => handleRemove(index)}
-                className="absolute top-2 right-2 w-7 h-7 bg-black/50 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity z-10"
-              >
-                <X className="w-4 h-4 text-white" />
-              </button>
-            )}
+            {/* Video Player */}
+            <div className="relative aspect-video rounded-lg overflow-hidden group bg-slate-900">
+              {videoErrors[index] ? (
+                <div className="w-full h-full flex flex-col items-center justify-center bg-slate-800 text-white">
+                  <Video className="w-8 h-8 text-slate-400 mb-2" />
+                  <span className="text-xs text-slate-400">Failed to load video</span>
+                  <button
+                    onClick={() => {
+                      setVideoErrors(prev => ({ ...prev, [index]: false }));
+                      const vid = videoRefs.current[index];
+                      if (vid) { vid.load(); }
+                    }}
+                    className="mt-2 text-xs text-rose-400 underline"
+                  >
+                    Retry
+                  </button>
+                </div>
+              ) : (
+                <>
+                  <video
+                    ref={(el) => { videoRefs.current[index] = el; }}
+                    src={video}
+                    className="w-full h-full object-cover"
+                    preload="metadata"
+                    playsInline
+                    controls
+                    controlsList="nodownload nofullscreen"
+                    onError={(e) => handleVideoError(index, e)}
+                    onLoadedData={() => handleVideoLoaded(index)}
+                    onPlay={() => setPlayingVideos(prev => ({ ...prev, [index]: true }))}
+                    onPause={() => setPlayingVideos(prev => ({ ...prev, [index]: false }))}
+                    onEnded={() => setPlayingVideos(prev => ({ ...prev, [index]: false }))}
+                    onContextMenu={(e) => e.preventDefault()}
+                    style={{ userSelect: 'none', WebkitUserDrag: 'none' }}
+                  />
+                  {/* Fullscreen button */}
+                  <button
+                    onClick={() => openFullscreen(video, index)}
+                    className="absolute bottom-2 right-2 w-8 h-8 bg-black/60 hover:bg-black/80 rounded-full flex items-center justify-center transition-all z-10 opacity-0 group-hover:opacity-100"
+                    title="Fullscreen"
+                  >
+                    <Maximize className="w-4 h-4 text-white" />
+                  </button>
+                </>
+              )}
+            </div>
+
+            {/* Video Info & Actions */}
+            <div className="p-4">
+              <p className="text-sm text-slate-500 mb-3">0 views</p>
+              
+              <div className="flex gap-2">
+                <button
+                  className="flex-1 px-4 py-2 bg-violet-600 hover:bg-violet-700 text-white rounded-lg font-medium text-sm transition-colors flex items-center justify-center gap-2"
+                  disabled={pushLoading === index}
+                  onClick={async () => {
+                    if (!userEmail) {
+                      toast.error('User not found. Please log in.');
+                      return;
+                    }
+                    setPushLoading(index);
+                    try {
+                      await base44.entities.Reel.create({
+                        user_email: userEmail,
+                        video_url: video,
+                        caption: '', // Optionally add a caption
+                      });
+                      toast.success('Video pushed to reels!');
+                    } catch (err) {
+                      toast.error('Failed to push video to reels.');
+                    }
+                    setPushLoading(null);
+                  }}
+                >
+                  {pushLoading === index ? (
+                    <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                  ) : (
+                    <span>🎬</span>
+                  )}
+                  Push to Reels
+                </button>
+                <button
+                  onClick={() => handleRemove(index)}
+                  className="flex-1 px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg font-medium text-sm transition-colors flex items-center justify-center gap-2"
+                >
+                  <X className="w-4 h-4" /> Delete
+                </button>
+              </div>
+            </div>
           </motion.div>
         ))}
         
+        {/* Add Video Button */}
         {editable && videos.length < 4 && (
           <label className="aspect-video rounded-xl border-2 border-dashed border-rose-200 hover:border-rose-400 flex flex-col items-center justify-center cursor-pointer transition-colors bg-rose-50/50 hover:bg-rose-50">
             <input
@@ -143,6 +283,87 @@ export default function VideoGallery({ videos = [], onVideosChange, editable = t
           </label>
         )}
       </div>
+
+      {/* Fullscreen Video Overlay */}
+      <AnimatePresence>
+        {fullscreenVideo && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/95 z-[9999] flex items-center justify-center p-4"
+            onClick={closeFullscreen}
+          >
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              transition={{ type: 'spring', damping: 25, stiffness: 300 }}
+              className="relative w-full max-w-4xl max-h-[90vh] flex items-center justify-center"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <video
+                ref={fullscreenVideoRef}
+                src={fullscreenVideo}
+                className="w-full max-h-[85vh] rounded-lg object-contain"
+                controls
+                autoPlay
+                playsInline
+                preload="auto"
+                controlsList="nodownload"
+                onContextMenu={(e) => e.preventDefault()}
+                style={{ userSelect: 'none' }}
+              />
+              {/* Minimize / Close button */}
+              <button
+                className="absolute -top-12 right-0 flex items-center gap-2 px-3 py-2 bg-white/10 hover:bg-white/20 rounded-full transition-colors"
+                onClick={closeFullscreen}
+              >
+                <Minimize className="w-4 h-4 text-white" />
+                <span className="text-white text-sm">Exit</span>
+              </button>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Delete Confirmation Dialog */}
+      <AnimatePresence>
+        {deleteConfirm !== null && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"
+          >
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="bg-white rounded-lg shadow-lg p-6 max-w-sm w-full"
+            >
+              <h2 className="text-lg font-semibold text-slate-800 mb-2">Delete Video?</h2>
+              <p className="text-slate-600 text-sm mb-6">
+                This action cannot be undone. This video will be permanently removed from your profile.
+              </p>
+              <div className="flex gap-3 justify-end">
+                <button
+                  onClick={() => setDeleteConfirm(null)}
+                  className="px-4 py-2 text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg font-medium transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={confirmDelete}
+                  className="px-4 py-2 text-white bg-red-600 hover:bg-red-700 rounded-lg font-medium transition-colors"
+                >
+                  Delete
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

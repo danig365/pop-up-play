@@ -119,7 +119,7 @@ export default function BlockedUsers() {
                 className="bg-white rounded-2xl shadow-sm p-4 flex items-center gap-4"
               >
                 <img
-                  src={item.profile.avatar_url || 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=80&h=80&fit=crop'}
+                  src={item.profile.avatar_url || `data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect fill='%23ddd6fe' width='100' height='100'/%3E%3Ccircle cx='50' cy='38' r='18' fill='%23a78bfa'/%3E%3Cellipse cx='50' cy='80' rx='28' ry='22' fill='%23a78bfa'/%3E%3C/svg%3E`}
                   alt={item.profile.display_name}
                   className="w-14 h-14 rounded-full object-cover border-2 border-slate-100"
                 />

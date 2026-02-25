@@ -193,7 +193,7 @@ export default function ReelGallery({ userEmail, editable = true }) {
               {/* @ts-ignore */}
               <AlertDialogAction
                 onClick={() => deleteReelId && deleteMutation.mutate(deleteReelId)}
-                className="bg-red-600 hover:bg-red-700">
+                className="bg-red-600 hover:bg-red-700 text-white">
                 Delete
               </AlertDialogAction>
             </AlertDialogFooter>

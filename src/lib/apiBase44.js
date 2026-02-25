@@ -36,17 +36,25 @@ class APIEntity {
   }
 
   async list(sortBy = '', limit = 100) {
-    const response = await fetch(`${API_BASE_URL}/entities/${this.tableName}?limit=${limit}`);
+    const userEmail = getCurrentUserEmail();
+    const headers = {};
+    if (userEmail) headers['x-user-email'] = userEmail;
+    
+    const response = await fetch(`${API_BASE_URL}/entities/${this.tableName}?limit=${limit}`, { headers });
     if (!response.ok) throw new Error(`Failed to list ${this.tableName}`);
     return response.json();
   }
 
   async filter(criteria = {}) {
+    const userEmail = getCurrentUserEmail();
+    const headers = { 'Content-Type': 'application/json' };
+    if (userEmail) headers['x-user-email'] = userEmail;
+    
     const response = await fetch(
       `${API_BASE_URL}/entities/${this.tableName}/filter`,
       {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify(criteria),
       }
     );
@@ -60,11 +68,15 @@ class APIEntity {
   }
 
   async create(data) {
+    const userEmail = getCurrentUserEmail();
+    const headers = { 'Content-Type': 'application/json' };
+    if (userEmail) headers['x-user-email'] = userEmail;
+    
     const response = await fetch(
       `${API_BASE_URL}/entities/${this.tableName}`,
       {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify(data),
       }
     );
@@ -78,11 +90,15 @@ class APIEntity {
   }
 
   async update(id, data) {
+    const userEmail = getCurrentUserEmail();
+    const headers = { 'Content-Type': 'application/json' };
+    if (userEmail) headers['x-user-email'] = userEmail;
+    
     const response = await fetch(
       `${API_BASE_URL}/entities/${this.tableName}/${id}`,
       {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify(data),
       }
     );
@@ -96,9 +112,13 @@ class APIEntity {
   }
 
   async delete(id) {
+    const userEmail = getCurrentUserEmail();
+    const headers = {};
+    if (userEmail) headers['x-user-email'] = userEmail;
+    
     const response = await fetch(
       `${API_BASE_URL}/entities/${this.tableName}/${id}`,
-      { method: 'DELETE' }
+      { method: 'DELETE', headers }
     );
     if (!response.ok) throw new Error(`Failed to delete ${this.tableName}`);
     return response.json();
@@ -113,17 +133,29 @@ class APIEntity {
 class APIIntegrations {
   Core = {
     UploadFile: async ({ file }) => {
-      // For now, create a data URL (in production, upload to cloud storage)
-      return new Promise((resolve) => {
-        const reader = new FileReader();
-        reader.onload = () => {
-          resolve({
-            file_url: reader.result,
-            file_name: file.name,
-          });
-        };
-        reader.readAsDataURL(file);
+      // Upload file to server via multipart form data
+      const formData = new FormData();
+      formData.append('file', file);
+
+      const { getApiBaseUrl } = await import('@/lib/apiUrl');
+      const baseUrl = getApiBaseUrl().replace(/\/api$/, '');
+
+      const response = await fetch(`${baseUrl}/api/upload`, {
+        method: 'POST',
+        body: formData,
       });
+
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.error || 'Upload failed');
+      }
+
+      const result = await response.json();
+      // Return full URL so it works from the browser
+      return {
+        file_url: `${baseUrl}${result.file_url}`,
+        file_name: result.file_name,
+      };
     },
     SendEmail: async (config) => {
       console.log('Email sent via API:', config);

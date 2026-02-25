@@ -61,6 +61,27 @@ export default function Profile() {
 
   const [backUrl, setBackUrl] = useState('Home');
   
+  // Function to fetch city, state, and country from zip code
+  const fetchCityFromZipCode = async (zipCode) => {
+    if (!zipCode || zipCode.length < 5) return;
+    try {
+      // Using zippopotam.us API - free and no key required
+      const response = await fetch(`https://api.zippopotam.us/us/${zipCode}`);
+      if (response.ok) {
+        const data = await response.json();
+        const city = data.places[0]?.['place name'] || '';
+        const state = data.places[0]?.['state abbreviation'] || '';
+        const country = data.country || 'United States';
+        setFormData((prev) => ({ ...prev, city, state, country }));
+      } else {
+        setFormData((prev) => ({ ...prev, city: '', state: '', country: '' }));
+      }
+    } catch (error) {
+      console.error('Error fetching location data:', error);
+      setFormData((prev) => ({ ...prev, city: '', state: '', country: '' }));
+    }
+  };
+  
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const userParam = params.get('user');
@@ -149,7 +170,7 @@ export default function Profile() {
         // Filter data to only include fields that exist in the database
         const validFields = [
           'display_name', 'bio', 'age', 'gender', 'interested_in',
-          'interests', 'hobbies', 'looking_for', 'city', 'state', 'zip_code', 'country',
+          'interests', 'hobbies', 'looking_for', 'zip_code', 'city',
           'avatar_url', 'photos', 'videos', 'location', 'email_notifications_enabled'
         ];
         
@@ -260,8 +281,8 @@ export default function Profile() {
 
   const handleSave = () => {
     // Validate required fields
-    if (!formData.display_name || !formData.age || !formData.gender || !formData.interested_in || !formData.avatar_url || !formData.city || !formData.state || !formData.zip_code) {
-      toast.error('Please complete all required fields (Display Name, Age, Gender, Interested In, Profile Picture, City, State, and ZIP Code)');
+    if (!formData.display_name || !formData.age || !formData.gender || !formData.interested_in || !formData.avatar_url || !formData.zip_code) {
+      toast.error('Please complete all required fields (Display Name, Age, Gender, Interested In, Profile Picture, and ZIP Code)');
       return;
     }
     // Validate age requirement
@@ -442,7 +463,7 @@ export default function Profile() {
             <div className="flex flex-col items-center gap-3">
               <div className="w-32 h-32 rounded-full overflow-hidden border-4 border-white shadow-xl">
                 <img
-                  src={formData.avatar_url || 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=200&h=200&fit=crop'}
+                  src={formData.avatar_url || `data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect fill='%23ddd6fe' width='100' height='100'/%3E%3Ccircle cx='50' cy='38' r='18' fill='%23a78bfa'/%3E%3Cellipse cx='50' cy='80' rx='28' ry='22' fill='%23a78bfa'/%3E%3C/svg%3E`}
                   alt="Profile"
                   className="w-full h-full object-cover"
                   onContextMenu={(e) => e.preventDefault()}
@@ -651,49 +672,48 @@ export default function Profile() {
               <h2 className="text-lg font-semibold text-slate-800 mb-4">Location</h2>
 
               <div className="space-y-4">
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <Label htmlFor="city" className="text-slate-600">City <span className="text-red-500">*</span></Label>
-                  <Input
-                    id="city"
-                    value={formData.city}
-                    onChange={(e) => setFormData((prev) => ({ ...prev, city: e.target.value }))}
-                    placeholder="City"
-                    className="mt-1 rounded-xl border-slate-200"
-                    disabled={!isOwnProfile} />
-                </div>
-                <div>
-                  <Label htmlFor="state" className="text-slate-600">State <span className="text-red-500">*</span></Label>
-                  <Input
-                    id="state"
-                    value={formData.state}
-                    onChange={(e) => setFormData((prev) => ({ ...prev, state: e.target.value }))}
-                    placeholder="State"
-                    className="mt-1 rounded-xl border-slate-200"
-                    disabled={!isOwnProfile} />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 gap-4">
                 <div>
                   <Label htmlFor="zip_code" className="text-slate-600">ZIP Code <span className="text-red-500">*</span></Label>
                   <Input
                     id="zip_code"
                     value={formData.zip_code}
-                    onChange={(e) => setFormData((prev) => ({ ...prev, zip_code: e.target.value }))}
+                    onChange={(e) => {
+                      setFormData((prev) => ({ ...prev, zip_code: e.target.value }));
+                      fetchCityFromZipCode(e.target.value);
+                    }}
                     placeholder="ZIP Code"
                     className="mt-1 rounded-xl border-slate-200"
                     disabled={!isOwnProfile} />
                 </div>
-                <div>
-                  <Label htmlFor="country" className="text-slate-600">Country</Label>
-                  <Input
-                    id="country"
-                    value={formData.country}
-                    onChange={(e) => setFormData((prev) => ({ ...prev, country: e.target.value }))}
-                    placeholder="Country"
-                    className="mt-1 rounded-xl border-slate-200"
-                    disabled={!isOwnProfile} />
+                <div className="grid grid-cols-3 gap-3">
+                  <div>
+                    <Label htmlFor="city" className="text-slate-600">City</Label>
+                    <Input
+                      id="city"
+                      value={formData.city}
+                      placeholder="Auto-filled based on ZIP Code"
+                      className="mt-1 rounded-xl border-slate-200 bg-gray-50"
+                      disabled={true} />
+                  </div>
+                  <div>
+                    <Label htmlFor="state" className="text-slate-600">State</Label>
+                    <Input
+                      id="state"
+                      value={formData.state}
+                      placeholder="Auto-filled based on ZIP Code"
+                      className="mt-1 rounded-xl border-slate-200 bg-gray-50"
+                      disabled={true} />
+                  </div>
+                  <div>
+                    <Label htmlFor="country" className="text-slate-600">Country</Label>
+                    <Input
+                      id="country"
+                      value={formData.country}
+                      placeholder="Auto-filled based on ZIP Code"
+                      className="mt-1 rounded-xl border-slate-200 bg-gray-50"
+                      disabled={true} />
+                  </div>
                 </div>
               </div>
               </div>
@@ -737,7 +757,7 @@ export default function Profile() {
 
             <TabsContent value="reels">
               <ReelGallery
-                userEmail={viewingUserEmail}
+                userEmail={isOwnProfile ? user?.email : viewingUserEmail}
                 editable={isOwnProfile} />
 
             </TabsContent>

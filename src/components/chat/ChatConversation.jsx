@@ -101,7 +101,7 @@ export default function ChatConversation({
 
           <Link to={createPageUrl('Profile') + `?user=${otherUserEmail}&back=Chat&chatWith=${otherUserEmail}`}>
             <img
-              src={otherProfile.avatar_url || 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=100&h=100&fit=crop'}
+              src={otherProfile.avatar_url || `data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect fill='%23ddd6fe' width='100' height='100'/%3E%3Ccircle cx='50' cy='38' r='18' fill='%23a78bfa'/%3E%3Cellipse cx='50' cy='80' rx='28' ry='22' fill='%23a78bfa'/%3E%3C/svg%3E`}
               alt={otherProfile.display_name}
               className="w-12 h-12 rounded-full object-cover border-2 border-violet-100 cursor-pointer hover:border-violet-300 transition-colors"
             />
@@ -165,7 +165,7 @@ export default function ChatConversation({
                         {!isOwn && showAvatar && (
                           <Link to={createPageUrl('Profile') + `?user=${otherUserEmail}&back=Chat&chatWith=${otherUserEmail}`}>
                             <img
-                              src={otherProfile.avatar_url || 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=100&h=100&fit=crop'}
+                              src={otherProfile.avatar_url || `data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect fill='%23ddd6fe' width='100' height='100'/%3E%3Ccircle cx='50' cy='38' r='18' fill='%23a78bfa'/%3E%3Cellipse cx='50' cy='80' rx='28' ry='22' fill='%23a78bfa'/%3E%3C/svg%3E`}
                               alt={otherProfile.display_name}
                               className="w-8 h-8 rounded-full object-cover flex-shrink-0 cursor-pointer hover:ring-2 hover:ring-violet-300 transition-all"
                             />

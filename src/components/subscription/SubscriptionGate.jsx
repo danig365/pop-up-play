@@ -49,7 +49,31 @@ export default function SubscriptionGate({ children }) {
         console.warn('⛔ User denied access - redirecting to Pricing');
         // Don't redirect if already on pricing page
         if (window.location.hash !== '#/Pricing') {
-          navigate(createPageUrl('Pricing'));
+          const fallbackPath = createPageUrl('Menu');
+          const blockedPaths = new Set([
+            createPageUrl('Chat'),
+            createPageUrl('VideoCall'),
+            createPageUrl('Broadcast'),
+            createPageUrl('BlockedUsers'),
+            createPageUrl('AccessCodeManager'),
+            createPageUrl('Pricing'),
+            createPageUrl('EnterAccessCode'),
+            createPageUrl('SubscriptionSuccess'),
+          ]);
+
+          const currentPath = `${window.location.pathname}${window.location.search || ''}`;
+          const lastVisitedPath = sessionStorage.getItem('lastVisitedPath');
+          const returnTo =
+            lastVisitedPath && !blockedPaths.has(lastVisitedPath) && lastVisitedPath !== currentPath
+              ? lastVisitedPath
+              : fallbackPath;
+
+          navigate(createPageUrl('Pricing'), {
+            replace: true,
+            state: {
+              returnTo,
+            },
+          });
         }
       }
     }

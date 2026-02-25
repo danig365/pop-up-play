@@ -9,24 +9,52 @@ import cors from 'cors';
 import bodyParser from 'body-parser';
 import dotenv from 'dotenv';
 import nodemailer from 'nodemailer';
+import multer from 'multer';
+import path from 'path';
+import fs from 'fs';
+import { fileURLToPath } from 'url';
+import crypto from 'crypto';
 
 dotenv.config();
 
 const { Pool } = pg;
 const app = express();
 const PORT = process.env.API_PORT || 3001;
+const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
+const POPUP_ALERT_RADIUS_MILES = Number(process.env.POPUP_ALERT_RADIUS_MILES || 60);
+const EMAIL_FROM =
+  process.env.EMAIL_FROM ||
+  process.env.SMTP_USER ||
+  process.env.GMAIL_USER ||
+  'no-reply@popup-play.local';
 
 // In-memory store for password reset tokens (in production, use database)
 const resetTokens = new Map();
 
-// Configure Gmail SMTP
-const transporter = nodemailer.createTransport({
-  service: 'gmail',
-  auth: {
-    user: process.env.GMAIL_USER,
-    pass: process.env.GMAIL_APP_PASSWORD,
-  },
-});
+function createEmailTransport() {
+  if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
+    const smtpPort = parseInt(process.env.SMTP_PORT || '587', 10);
+    return nodemailer.createTransport({
+      host: process.env.SMTP_HOST,
+      port: smtpPort,
+      secure: smtpPort === 465,
+      auth: {
+        user: process.env.SMTP_USER,
+        pass: process.env.SMTP_PASS,
+      },
+    });
+  }
+
+  return nodemailer.createTransport({
+    service: 'gmail',
+    auth: {
+      user: process.env.GMAIL_USER,
+      pass: process.env.GMAIL_APP_PASSWORD,
+    },
+  });
+}
+
+const transporter = createEmailTransport();
 
 // Test email configuration
 transporter.verify((error, success) => {
@@ -53,6 +81,100 @@ if (dbPassword && dbPassword.trim && dbPassword.trim().length > 0) {
 
 
 const pool = new Pool(poolConfig);
+
+function calculateDistanceMiles(lat1, lon1, lat2, lon2) {
+  const R = 3959;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+    Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
+async function sendPopupProximityEmails(poppedProfile) {
+  try {
+    const lat = Number(poppedProfile.latitude);
+    const lon = Number(poppedProfile.longitude);
+
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+      console.log('ℹ️ [PopupEmail] Skipping proximity emails: popped user has no coordinates');
+      return;
+    }
+
+    const nearbyCandidates = await pool.query(
+      `SELECT user_email, display_name, latitude, longitude, zip_code, location,
+              COALESCE(email_notifications_enabled, true) AS email_notifications_enabled
+       FROM "UserProfile"
+       WHERE user_email != $1
+         AND is_popped_up = true
+         AND latitude IS NOT NULL
+         AND longitude IS NOT NULL
+         AND COALESCE(email_notifications_enabled, true) = true`,
+      [poppedProfile.user_email]
+    );
+
+    if (nearbyCandidates.rows.length === 0) {
+      return;
+    }
+
+    const popperName = poppedProfile.display_name || poppedProfile.user_email;
+    const popperZip = poppedProfile.zip_code || poppedProfile.location || 'Unknown';
+    const popperMessage = poppedProfile.popup_message || 'is active on the map now.';
+
+    const recipients = nearbyCandidates.rows.filter((candidate) => {
+      const candidateLat = Number(candidate.latitude);
+      const candidateLon = Number(candidate.longitude);
+      if (!Number.isFinite(candidateLat) || !Number.isFinite(candidateLon)) return false;
+      const distance = calculateDistanceMiles(lat, lon, candidateLat, candidateLon);
+      return distance <= POPUP_ALERT_RADIUS_MILES;
+    });
+
+    if (recipients.length === 0) {
+      return;
+    }
+
+    await Promise.allSettled(
+      recipients.map((recipient) => {
+        const recipientZip = recipient.zip_code || recipient.location || 'Unknown';
+        const recipientName = recipient.display_name || recipient.user_email;
+
+        return transporter.sendMail({
+          from: EMAIL_FROM,
+          to: recipient.user_email,
+          subject: `Someone nearby popped up on Pop Up Play`,
+          html: `
+            <div style="font-family: Arial, sans-serif; max-width: 640px; margin: 0 auto;">
+              <h2 style="color: #1e293b; margin-bottom: 10px;">New Nearby Pop-Up Alert</h2>
+              <p style="color: #334155;">Hi ${recipientName},</p>
+              <p style="color: #334155;">
+                <strong>${popperName}</strong> just popped up near your area (within ${POPUP_ALERT_RADIUS_MILES} miles).
+              </p>
+              <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px; margin: 16px 0;">
+                <p style="margin: 0 0 8px; color: #475569;"><strong>Their ZIP:</strong> ${popperZip}</p>
+                <p style="margin: 0 0 8px; color: #475569;"><strong>Your ZIP:</strong> ${recipientZip}</p>
+                <p style="margin: 0; color: #1e293b;"><em>“${popperMessage}”</em></p>
+              </div>
+              <a href="${FRONTEND_URL}/#/OnlineMembers?from=home"
+                 style="background-color: #8b5cf6; color: #fff; text-decoration: none; display: inline-block; padding: 12px 18px; border-radius: 6px; font-weight: 600;">
+                View Nearby Members
+              </a>
+              <p style="margin-top: 22px; color: #94a3b8; font-size: 12px;">
+                You are receiving this because email notifications are enabled in your profile.
+              </p>
+            </div>
+          `,
+        });
+      })
+    );
+
+    console.log(`✅ [PopupEmail] Sent nearby pop-up alerts to ${recipients.length} users`);
+  } catch (error) {
+    console.error('❌ [PopupEmail] Failed to send nearby pop-up alerts:', error.message);
+  }
+}
 
 // Run migrations on startup
 async function runMigrations() {
@@ -169,15 +291,133 @@ runMigrations();
 
 // Middleware
 app.use(cors());
-// Increase body size limit to 100MB for base64 encoded images/videos
-app.use(bodyParser.json({ limit: '100mb' }));
-app.use(bodyParser.urlencoded({ extended: true, limit: '100mb' }));
+// Increase body size limit to 250MB for large uploads
+app.use(express.json({ limit: '250mb' }));
+app.use(express.urlencoded({ extended: true, limit: '250mb' }));
+app.use(bodyParser.json({ limit: '250mb' }));
+app.use(bodyParser.urlencoded({ extended: true, limit: '250mb' }));
 
-// Error handling middleware
+// ============ File Upload Setup ============
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const uploadsDir = path.join(__dirname, 'uploads');
+
+// Create uploads directory if it doesn't exist
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+}
+console.log('📁 Uploads directory:', uploadsDir);
+
+// Serve uploaded files statically
+app.use('/api/uploads', express.static(uploadsDir, {
+  maxAge: '7d',
+  acceptRanges: true,
+  setHeaders: (res, filePath) => {
+    const ext = path.extname(filePath).toLowerCase();
+    const mimeTypes = {
+      '.mp4': 'video/mp4', '.mov': 'video/quicktime',
+      '.avi': 'video/x-msvideo', '.webm': 'video/webm',
+      '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+      '.png': 'image/png', '.gif': 'image/gif', '.webp': 'image/webp',
+    };
+    if (mimeTypes[ext]) {
+      res.setHeader('Content-Type', mimeTypes[ext]);
+    }
+    // Ensure video files support range requests for proper playback/seeking
+    const videoExts = ['.mp4', '.mov', '.avi', '.webm'];
+    if (videoExts.includes(ext)) {
+      res.setHeader('Accept-Ranges', 'bytes');
+      res.setHeader('Cache-Control', 'public, max-age=604800');
+    }
+  }
+}));
+
+// Configure multer for disk storage
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, uploadsDir),
+  filename: (req, file, cb) => {
+    const uniqueId = crypto.randomBytes(16).toString('hex');
+    const ext = path.extname(file.originalname).toLowerCase();
+    cb(null, `${Date.now()}_${uniqueId}${ext}`);
+  }
+});
+
+const upload = multer({
+  storage,
+  limits: { fileSize: 200 * 1024 * 1024 }, // 200MB
+  fileFilter: (req, file, cb) => {
+    const allowed = [
+      'video/mp4', 'video/quicktime', 'video/x-msvideo', 'video/webm',
+      'image/jpeg', 'image/png', 'image/gif', 'image/webp'
+    ];
+    if (allowed.includes(file.mimetype)) cb(null, true);
+    else cb(new Error(`File type ${file.mimetype} not allowed`));
+  }
+});
+
+// File upload endpoint
+app.post('/api/upload', upload.single('file'), (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+    const fileUrl = `/api/uploads/${req.file.filename}`;
+    console.log(`📁 [Upload] Saved: ${req.file.originalname} -> ${fileUrl} (${(req.file.size / 1024 / 1024).toFixed(2)}MB)`);
+    res.json({ file_url: fileUrl, file_name: req.file.originalname, file_size: req.file.size });
+  } catch (error) {
+    console.error('❌ [Upload] Error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Handle multer errors
 app.use((err, req, res, next) => {
+  if (err instanceof multer.MulterError) {
+    if (err.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ error: 'File too large. Maximum size is 200MB.' });
+    return res.status(400).json({ error: err.message });
+  }
+  if (err.message && err.message.includes('not allowed')) return res.status(400).json({ error: err.message });
   console.error('Error:', err);
   res.status(500).json({ error: err.message });
 });
+
+// ============ Authentication & Authorization Middleware ============
+
+/**
+ * Middleware: Validate that x-user-email header corresponds to a real user in the DB.
+ * Attaches req.authenticatedUser = { email, role, ... } on success.
+ */
+async function authenticateUser(req, res, next) {
+  try {
+    const email = req.headers['x-user-email'];
+    if (!email) {
+      return res.status(401).json({ error: 'Authentication required: x-user-email header missing' });
+    }
+
+    const result = await pool.query('SELECT email, name, role FROM "User" WHERE email = $1', [email]);
+    if (result.rows.length === 0) {
+      return res.status(401).json({ error: 'Authentication failed: user not found' });
+    }
+
+    req.authenticatedUser = result.rows[0];
+    next();
+  } catch (error) {
+    console.error('❌ [Auth Middleware] Error:', error.message);
+    res.status(500).json({ error: 'Authentication error' });
+  }
+}
+
+/**
+ * Middleware: Requires authenticated user with admin role.
+ * Must be used after authenticateUser.
+ */
+function requireAdmin(req, res, next) {
+  if (!req.authenticatedUser) {
+    return res.status(401).json({ error: 'Authentication required' });
+  }
+  if (req.authenticatedUser.role !== 'admin') {
+    return res.status(403).json({ error: 'Forbidden: admin access required' });
+  }
+  next();
+}
 
 // ============ Admin Setup Route ============
 
@@ -479,11 +719,11 @@ app.post('/api/auth/forgot-password', async (req, res) => {
     resetTokens.set(resetToken, { email, expiryTime });
 
     // Reset link (in production, this would be your frontend URL)
-    const resetLink = `${process.env.FRONTEND_URL}/reset-password?token=${resetToken}`;
+    const resetLink = `${FRONTEND_URL}/reset-password?token=${resetToken}`;
 
     // Prepare email content
     const mailOptions = {
-      from: process.env.GMAIL_USER,
+      from: EMAIL_FROM,
       to: email,
       subject: 'Pop-Up Play - Password Reset Request',
       html: `
@@ -702,6 +942,82 @@ app.post('/api/auth/logout', async (req, res) => {
   }
 });
 
+// ============ Access Code Redemption ============
+
+// Secure endpoint for redeeming access codes - allows authenticated users to redeem codes
+// without exposing full AccessCode CRUD operations
+app.post('/api/access-code/redeem', authenticateUser, async (req, res) => {
+  try {
+    const { code } = req.body;
+    const userEmail = req.authenticatedUser.email;
+
+    if (!code || typeof code !== 'string') {
+      return res.status(400).json({ error: 'Access code is required' });
+    }
+
+    const normalizedCode = code.trim().toUpperCase();
+    console.log(`🔑 [RedeemCode] User ${userEmail} attempting to redeem code: ${normalizedCode}`);
+
+    // Find the access code
+    const codeResult = await pool.query(
+      'SELECT * FROM "AccessCode" WHERE code = $1 AND is_used = false',
+      [normalizedCode]
+    );
+
+    if (codeResult.rows.length === 0) {
+      console.log(`🔑 [RedeemCode] Invalid or already used code: ${normalizedCode}`);
+      return res.status(400).json({ error: 'Invalid or already used code' });
+    }
+
+    const accessCode = codeResult.rows[0];
+
+    // Check if expired
+    if (accessCode.valid_until && new Date(accessCode.valid_until) < new Date()) {
+      console.log(`🔑 [RedeemCode] Code expired: ${normalizedCode}`);
+      return res.status(400).json({ error: 'This code has expired' });
+    }
+
+    // Mark code as used
+    await pool.query(
+      'UPDATE "AccessCode" SET is_used = true, used_by = $1, used_at = $2 WHERE id = $3',
+      [userEmail, new Date().toISOString(), accessCode.id]
+    );
+    console.log(`🔑 [RedeemCode] Code marked as used: ${normalizedCode}`);
+
+    // Check if user already has a subscription
+    const existingSubResult = await pool.query(
+      'SELECT * FROM "UserSubscription" WHERE user_email = $1',
+      [userEmail]
+    );
+
+    if (existingSubResult.rows.length > 0) {
+      // Update existing subscription
+      const subId = existingSubResult.rows[0].id;
+      await pool.query(
+        'UPDATE "UserSubscription" SET status = $1, start_date = $2, end_date = $3 WHERE id = $4',
+        ['active', new Date().toISOString(), accessCode.valid_until, subId]
+      );
+      console.log(`🔑 [RedeemCode] Updated existing subscription for: ${userEmail}`);
+    } else {
+      // Create new subscription
+      await pool.query(
+        'INSERT INTO "UserSubscription" (user_email, status, start_date, end_date) VALUES ($1, $2, $3, $4)',
+        [userEmail, 'active', new Date().toISOString(), accessCode.valid_until]
+      );
+      console.log(`🔑 [RedeemCode] Created new subscription for: ${userEmail}`);
+    }
+
+    res.json({ 
+      success: true, 
+      message: 'Access code redeemed successfully',
+      valid_until: accessCode.valid_until
+    });
+  } catch (error) {
+    console.error('❌ [RedeemCode] Error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // ============ User Routes ============
 
 app.get('/api/users', async (req, res) => {
@@ -725,7 +1041,7 @@ app.get('/api/users/:email', async (req, res) => {
 // ============ Generic Entity Routes ============
 
 // GET /api/entities/:table
-app.get('/api/entities/:table', async (req, res) => {
+app.get('/api/entities/:table', authenticateUser, async (req, res) => {
   try {
     const { table } = req.params;
     const { limit = 100, offset = 0 } = req.query;
@@ -736,6 +1052,12 @@ app.get('/api/entities/:table', async (req, res) => {
     
     if (!validTables.includes(table)) {
       return res.status(400).json({ error: 'Invalid table name' });
+    }
+
+    // Admin-only tables: only admins can list all records
+    const adminOnlyTables = ['User', 'AccessCode', 'UserSession'];
+    if (adminOnlyTables.includes(table) && req.authenticatedUser.role !== 'admin') {
+      return res.status(403).json({ error: 'Forbidden: admin access required to list this table' });
     }
 
     const result = await pool.query(
@@ -749,7 +1071,7 @@ app.get('/api/entities/:table', async (req, res) => {
 });
 
 // GET /api/entities/:table/filter
-app.post('/api/entities/:table/filter', async (req, res) => {
+app.post('/api/entities/:table/filter', authenticateUser, async (req, res) => {
   try {
     const { table } = req.params;
     const filters = req.body;
@@ -760,6 +1082,12 @@ app.post('/api/entities/:table/filter', async (req, res) => {
     
     if (!validTables.includes(table)) {
       return res.status(400).json({ error: 'Invalid table name' });
+    }
+
+    // Admin-only tables: only admins can query all records
+    const adminOnlyTables = ['AccessCode'];
+    if (adminOnlyTables.includes(table) && req.authenticatedUser.role !== 'admin') {
+      return res.status(403).json({ error: 'Forbidden: admin access required' });
     }
 
     // Build WHERE clause
@@ -791,7 +1119,7 @@ app.post('/api/entities/:table/filter', async (req, res) => {
 });
 
 // POST /api/entities/:table (Create)
-app.post('/api/entities/:table', async (req, res) => {
+app.post('/api/entities/:table', authenticateUser, async (req, res) => {
   try {
     const { table } = req.params;
     const data = req.body;
@@ -808,6 +1136,12 @@ app.post('/api/entities/:table', async (req, res) => {
     if (!validTables.includes(table)) {
       console.error('[DEBUG ENTITY CREATE] Invalid table name:', table);
       return res.status(400).json({ error: 'Invalid table name' });
+    }
+
+    // Admin-only: only admins can create access codes, subscription settings, about videos, or broadcasts
+    const adminOnlyCreateTables = ['AccessCode', 'SubscriptionSettings', 'AboutVideo', 'BroadcastMessage'];
+    if (adminOnlyCreateTables.includes(table) && req.authenticatedUser.role !== 'admin') {
+      return res.status(403).json({ error: 'Forbidden: admin access required to create records in this table' });
     }
 
     // Handle array columns for specific tables
@@ -860,7 +1194,7 @@ app.post('/api/entities/:table', async (req, res) => {
 });
 
 // GET /api/entities/:table/:id (Get single record)
-app.get('/api/entities/:table/:id', async (req, res) => {
+app.get('/api/entities/:table/:id', authenticateUser, async (req, res) => {
   try {
     const { table, id } = req.params;
 
@@ -889,10 +1223,11 @@ app.get('/api/entities/:table/:id', async (req, res) => {
 });
 
 // PUT /api/entities/:table/:id (Update)
-app.put('/api/entities/:table/:id', async (req, res) => {
+app.put('/api/entities/:table/:id', authenticateUser, async (req, res) => {
   try {
     const { table, id } = req.params;
     const data = req.body;
+    let previousProfile = null;
 
     // Validate table name
     const validTables = ['User', 'UserProfile', 'UserSubscription', 'SubscriptionSettings', 
@@ -900,6 +1235,22 @@ app.put('/api/entities/:table/:id', async (req, res) => {
     
     if (!validTables.includes(table)) {
       return res.status(400).json({ error: 'Invalid table name' });
+    }
+
+    if (table === 'UserProfile') {
+      const previousResult = await pool.query(
+        `SELECT id, user_email, display_name, is_popped_up, popup_message, latitude, longitude, zip_code, location
+         FROM "UserProfile"
+         WHERE id = $1`,
+        [id]
+      );
+      previousProfile = previousResult.rows[0] || null;
+    }
+
+    // Admin-only: only admins can update subscription settings, access codes, or about videos
+    const adminOnlyUpdateTables = ['SubscriptionSettings', 'AccessCode', 'AboutVideo'];
+    if (adminOnlyUpdateTables.includes(table) && req.authenticatedUser.role !== 'admin') {
+      return res.status(403).json({ error: 'Forbidden: admin access required to update records in this table' });
     }
 
     // Handle array columns for specific tables
@@ -934,6 +1285,16 @@ app.put('/api/entities/:table/:id', async (req, res) => {
       return res.status(404).json({ error: 'Record not found' });
     }
 
+    if (table === 'UserProfile') {
+      const updatedProfile = result.rows[0];
+      const wasPopped = previousProfile?.is_popped_up === true;
+      const isPopped = updatedProfile?.is_popped_up === true;
+
+      if (!wasPopped && isPopped) {
+        sendPopupProximityEmails(updatedProfile);
+      }
+    }
+
     res.json(result.rows[0]);
   } catch (error) {
     console.error(`❌ Update error for table ${req.params.table}:`, error.message, error.detail, error.code);
@@ -946,7 +1307,7 @@ app.put('/api/entities/:table/:id', async (req, res) => {
 });
 
 // DELETE /api/entities/:table/:id
-app.delete('/api/entities/:table/:id', async (req, res) => {
+app.delete('/api/entities/:table/:id', authenticateUser, async (req, res) => {
   try {
     const { table, id } = req.params;
 
@@ -956,6 +1317,12 @@ app.delete('/api/entities/:table/:id', async (req, res) => {
     
     if (!validTables.includes(table)) {
       return res.status(400).json({ error: 'Invalid table name' });
+    }
+
+    // Admin-only: only admins can delete access codes, subscription settings, users, about videos, broadcasts
+    const adminOnlyDeleteTables = ['AccessCode', 'SubscriptionSettings', 'User', 'UserSubscription', 'AboutVideo', 'BroadcastMessage'];
+    if (adminOnlyDeleteTables.includes(table) && req.authenticatedUser.role !== 'admin') {
+      return res.status(403).json({ error: 'Forbidden: admin access required to delete records in this table' });
     }
 
     const result = await pool.query(
@@ -987,15 +1354,11 @@ async function seedData() {
 
 // ============ Broadcast API Routes ============
 
-// POST /api/broadcast/send - Send broadcast to all users
-app.post('/api/broadcast/send', async (req, res) => {
+// POST /api/broadcast/send - Send broadcast to all users (admin only)
+app.post('/api/broadcast/send', authenticateUser, requireAdmin, async (req, res) => {
   try {
     const { subject, message } = req.body;
-    const adminEmail = req.headers['x-user-email'];
-
-    if (!adminEmail) {
-      return res.status(401).json({ error: 'User email required' });
-    }
+    const adminEmail = req.authenticatedUser.email;
 
     if (!message || !message.trim()) {
       return res.status(400).json({ error: 'Message is required' });
@@ -1071,8 +1434,8 @@ app.post('/api/broadcast/send', async (req, res) => {
   }
 });
 
-// GET /api/broadcast/recent - Get recent broadcasts
-app.get('/api/broadcast/recent', async (req, res) => {
+// GET /api/broadcast/recent - Get recent broadcasts (admin only)
+app.get('/api/broadcast/recent', authenticateUser, requireAdmin, async (req, res) => {
   try {
     const limit = req.query.limit || 20;
 
@@ -1264,7 +1627,7 @@ app.post('/api/functions/getSubscriptionStatus', async (req, res) => {
 // ============ Chat Message Email Notifications ============
 
 // POST /api/email/send-chat-notification - Send email when user receives a message
-app.post('/api/email/send-chat-notification', async (req, res) => {
+app.post('/api/email/send-chat-notification', authenticateUser, async (req, res) => {
   try {
     const { recipientEmail, senderEmail, messageContent, senderName } = req.body;
 
@@ -1284,7 +1647,7 @@ app.post('/api/email/send-chat-notification', async (req, res) => {
 
     // Prepare email content - similar to forgot password style
     const mailOptions = {
-      from: process.env.GMAIL_USER,
+      from: EMAIL_FROM,
       to: recipientEmail,
       subject: `New message from ${senderName} - Pop Up Play`,
       html: `
@@ -1301,7 +1664,7 @@ app.post('/api/email/send-chat-notification', async (req, res) => {
             Log in to <strong>Pop Up Play</strong> to reply to this message.
           </p>
 
-          <a href="${process.env.FRONTEND_URL || 'http://localhost:5173'}/#/Chat" 
+          <a href="${FRONTEND_URL}/#/Chat" 
              style="background-color: #8b5cf6; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block; font-weight: bold;">
             Reply in Pop Up Play
           </a>
@@ -1370,12 +1733,9 @@ async function getPayPalAccessToken() {
 }
 
 // Create PayPal Order
-app.post('/api/paypal/create-order', async (req, res) => {
+app.post('/api/paypal/create-order', authenticateUser, async (req, res) => {
   try {
-    const userEmail = req.headers['x-user-email'];
-    if (!userEmail) {
-      return res.status(401).json({ error: 'User email required' });
-    }
+    const userEmail = req.authenticatedUser.email;
 
     // Get subscription settings for price
     const settingsResult = await pool.query('SELECT * FROM "SubscriptionSettings" ORDER BY updated_date DESC LIMIT 1');
@@ -1437,17 +1797,13 @@ app.post('/api/paypal/create-order', async (req, res) => {
 });
 
 // Capture PayPal Order (after user approval)
-app.post('/api/paypal/capture-order', async (req, res) => {
+app.post('/api/paypal/capture-order', authenticateUser, async (req, res) => {
   try {
     const { orderID } = req.body;
-    const userEmail = req.headers['x-user-email'];
+    const userEmail = req.authenticatedUser.email;
 
     if (!orderID) {
       return res.status(400).json({ error: 'Order ID required' });
-    }
-
-    if (!userEmail) {
-      return res.status(401).json({ error: 'User email required' });
     }
 
     const accessToken = await getPayPalAccessToken();

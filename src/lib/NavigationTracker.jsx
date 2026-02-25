@@ -12,6 +12,14 @@ export default function NavigationTracker() {
 
     // Post navigation changes to parent window
     useEffect(() => {
+        const currentPath = `${location.pathname}${location.search || ''}`;
+        const previousPath = sessionStorage.getItem('currentPath');
+
+        if (previousPath && previousPath !== currentPath) {
+            sessionStorage.setItem('lastVisitedPath', previousPath);
+        }
+        sessionStorage.setItem('currentPath', currentPath);
+
         window.parent?.postMessage({
             type: "app_changed_url",
             url: window.location.href

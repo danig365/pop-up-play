@@ -8,16 +8,20 @@ import { Link } from 'react-router-dom';
 import { createPageUrl } from '@/utils';
 import ReelViewer from '@/components/reels/ReelViewer';
 import ReelUpload from '@/components/reels/ReelUpload';
+import { useSubscription } from '@/lib/SubscriptionContext';
 
 export default function Reels() {
   const [user, setUser] = useState(null);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [showUpload, setShowUpload] = useState(false);
+  const [reelsLocked, setReelsLocked] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
   const [touchStart, setTouchStart] = useState(0);
   const [touchEnd, setTouchEnd] = useState(0);
   const containerRef = useRef(null);
   const queryClient = useQueryClient();
+  const { guardAction, hasAccess, paywallOpen, closePaywall } = useSubscription();
+  const paywallTimerRef = useRef(null);
 
   useEffect(() => {
     const loadUser = async () => {
@@ -74,6 +78,7 @@ export default function Reels() {
   };
 
   const handleTouchEnd = () => {
+    if (reelsLocked && !hasAccess) return;
     if (!touchStart || !touchEnd) return;
     
     const distance = touchStart - touchEnd;
@@ -94,6 +99,7 @@ export default function Reels() {
   // Handle wheel navigation (desktop)
   const handleWheel = (e) => {
     e.preventDefault();
+    if (reelsLocked && !hasAccess) return;
     
     if (e.deltaY > 0) {
       handleNextReel();
@@ -125,10 +131,33 @@ export default function Reels() {
         handlePreviousReel();
       }
     };
-
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [currentIndex, reels.length]);
+
+  // Show paywall after 2 seconds for non-access users
+  useEffect(() => {
+    if (hasAccess) {
+      setReelsLocked(false);
+      clearTimeout(paywallTimerRef.current);
+      return;
+    }
+
+    // Only start timer after both reel and profile are loaded for the current index
+    const reelLoaded = reels.length > 0 && reels[currentIndex];
+    const profileLoaded = reelLoaded && getProfileForReel(reels[currentIndex]);
+    if (!hasAccess && reelLoaded && profileLoaded && !paywallOpen && !reelsLocked) {
+      paywallTimerRef.current = setTimeout(() => {
+        setReelsLocked(true);
+        guardAction('view reels');
+      }, 2000);
+      return () => {
+        clearTimeout(paywallTimerRef.current);
+      };
+    } else {
+      clearTimeout(paywallTimerRef.current);
+    }
+  }, [hasAccess, reels, currentIndex, paywallOpen, profiles, reelsLocked]);
 
   const handleUploadComplete = () => {
     setShowUpload(false);
@@ -162,7 +191,10 @@ export default function Reels() {
           <h2 className="text-white text-xl font-bold mb-2">No Reels Yet</h2>
           <p className="text-white/70 mb-6">Be the first to share a reel!</p>
           <Button
-            onClick={() => setShowUpload(true)}
+            onClick={() => {
+              if (!guardAction('upload reels')) return;
+              setShowUpload(true);
+            }}
             className="bg-violet-600 hover:bg-violet-700 text-white">
             <Plus className="w-5 h-5 mr-2 text-white" />
             Upload Reel
@@ -206,7 +238,10 @@ export default function Reels() {
               {isMuted ? <VolumeX className="w-5 h-5" /> : <Volume2 className="w-5 h-5" />}
             </Button>
             <Button
-              onClick={() => setShowUpload(true)}
+              onClick={() => {
+                if (!guardAction('upload reels')) return;
+                setShowUpload(true);
+              }}
               size="icon"
               className="rounded-full bg-violet-600 hover:bg-violet-700 text-white">
               <Plus className="w-5 h-5 text-white" />
@@ -231,7 +266,8 @@ export default function Reels() {
               <ReelViewer
                 reel={reels[currentIndex]}
                 profile={getProfileForReel(reels[currentIndex])}
-                isActive={true}
+                isActive={!(reelsLocked && !hasAccess)}
+                blocked={reelsLocked && !hasAccess}
                 onToggleMute={() => setIsMuted(!isMuted)}
                 isMuted={isMuted}
                 reelIndex={currentIndex} />
@@ -239,6 +275,10 @@ export default function Reels() {
           )}
         </AnimatePresence>
       </div>
+
+      {reelsLocked && !hasAccess && (
+        <div className="absolute inset-0 bg-black/85 z-40 pointer-events-auto" />
+      )}
 
       {/* Upload Modal */}
       <AnimatePresence>

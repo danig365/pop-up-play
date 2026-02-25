@@ -10,12 +10,14 @@ import { getApiBaseUrl } from '@/lib/apiUrl';
 import { createPageUrl } from '@/utils';
 import ChatList from '@/components/chat/ChatList';
 import ChatConversation from '@/components/chat/ChatConversation';
+import { useSubscription } from '@/lib/SubscriptionContext';
 
 export default function Chat() {
   const [user, setUser] = useState(null);
   const [selectedConversation, setSelectedConversation] = useState(null);
   const [backUrl, setBackUrl] = useState(createPageUrl('Menu'));
   const queryClient = useQueryClient();
+  const { guardAction } = useSubscription();
 
   // Check for user parameter in URL and determine back button destination
   useEffect(() => {
@@ -165,6 +167,7 @@ export default function Chat() {
   });
 
   const handleSendMessage = async (content, attachment_url = null) => {
+    if (!guardAction('send messages')) return;
     await sendMessageMutation.mutateAsync({ content, attachment_url });
   };
 

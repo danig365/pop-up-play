@@ -48,15 +48,25 @@ A modern, interactive social platform built with React and Vite, featuring real-
 3. **Set up environment variables**
    Create a `.env` file in the root directory:
    ```bash
-   cp ource\ .env .env
+   cp .env.example .env
    ```
    Update the `.env` file with your configuration:
    ```
-   VITE_API_BASE_URL=http://localhost:3000
-   STRIPE_PUBLIC_KEY=your_stripe_public_key
-   DATABASE_URL=your_database_connection_string
-   JWT_SECRET=your_jwt_secret
-   STRIPE_SECRET_KEY=your_stripe_secret_key
+   API_PORT=3001
+   FRONTEND_URL=http://localhost:5173
+   DB_HOST=localhost
+   DB_PORT=5432
+   DB_NAME=popup_play_db
+   DB_USER=postgres
+   DB_PASSWORD=your_database_password
+
+   SMTP_HOST=smtp.mailprovider.com
+   SMTP_PORT=587
+   SMTP_USER=your_smtp_username
+   SMTP_PASS=your_smtp_password
+   EMAIL_FROM=no-reply@popup-play.com
+
+   POPUP_ALERT_RADIUS_MILES=60
    ```
 
 4. **Initialize the database**

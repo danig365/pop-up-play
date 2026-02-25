@@ -6,7 +6,7 @@ import { Link } from 'react-router-dom';
 import { createPageUrl } from '@/utils';
 import { base44 } from '@/api/base44Client';
 
-export default function ReelViewer({ reel, profile, isActive, onToggleMute, isMuted, reelIndex }) {
+export default function ReelViewer({ reel, profile, isActive, blocked = false, onToggleMute, isMuted, reelIndex }) {
   const videoRef = useRef(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [viewCounted, setViewCounted] = useState(false);
@@ -41,6 +41,12 @@ export default function ReelViewer({ reel, profile, isActive, onToggleMute, isMu
   useEffect(() => {
     if (!videoRef.current) return;
 
+    if (blocked) {
+      videoRef.current.pause();
+      setIsPlaying(false);
+      return;
+    }
+
     if (isActive) {
       videoRef.current.play().catch(() => {});
       setIsPlaying(true);
@@ -48,7 +54,7 @@ export default function ReelViewer({ reel, profile, isActive, onToggleMute, isMu
       videoRef.current.pause();
       setIsPlaying(false);
     }
-  }, [isActive]);
+  }, [isActive, blocked]);
 
   useEffect(() => {
     if (videoRef.current) {
@@ -122,6 +128,7 @@ export default function ReelViewer({ reel, profile, isActive, onToggleMute, isMu
   }, [isDragging, duration]);
 
   const handleVideoClick = () => {
+    if (blocked) return;
     if (!videoRef.current) return;
     
     if (isPlaying) {
@@ -179,7 +186,7 @@ export default function ReelViewer({ reel, profile, isActive, onToggleMute, isMu
           <div className="flex items-center gap-3 mb-3">
             <div className="w-12 h-12 rounded-full overflow-hidden border-2 border-white">
               <img
-                src={profile?.avatar_url || 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=100&h=100&fit=crop'}
+                src={profile?.avatar_url || `data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect fill='%23ddd6fe' width='100' height='100'/%3E%3Ccircle cx='50' cy='38' r='18' fill='%23a78bfa'/%3E%3Cellipse cx='50' cy='80' rx='28' ry='22' fill='%23a78bfa'/%3E%3C/svg%3E`}
                 alt="Profile"
                 className="w-full h-full object-cover" />
             </div>
@@ -188,7 +195,9 @@ export default function ReelViewer({ reel, profile, isActive, onToggleMute, isMu
                 {profile?.display_name || 'Unknown User'}
               </p>
               <p className="text-white/70 text-sm">
-                {profile?.current_city}, {profile?.current_state}
+                {profile?.current_city}
+                {profile?.current_city && profile?.current_state ? ', ' : ''}
+                {profile?.current_state}
               </p>
             </div>
           </div>

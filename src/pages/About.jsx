@@ -174,19 +174,27 @@ export default function About() {
             </div> :
 
           <div className="aspect-video bg-gradient-to-br from-violet-100 to-rose-100 flex items-center justify-center">
-              <div className="text-center p-8">
-                <div className="w-20 h-20 mx-auto mb-4 rounded-full bg-white/80 flex items-center justify-center">
-                  <Upload className="w-10 h-10 text-violet-400" />
+              {!isAdmin ? (
+                <video
+                  src="/video.mp4"
+                  controls
+                  className="w-full h-full object-cover bg-slate-900"
+                  playsInline>
+                  Your browser does not support the video tag.
+                </video>
+              ) : (
+                <div className="text-center p-8">
+                  <div className="w-20 h-20 mx-auto mb-4 rounded-full bg-white/80 flex items-center justify-center">
+                    <Upload className="w-10 h-10 text-violet-400" />
+                  </div>
+                  <h3 className="text-lg font-semibold text-slate-700 mb-2">
+                    No video uploaded yet
+                  </h3>
+                  <p className="text-sm text-slate-500">
+                    Upload a video to introduce Pop Up Play to users
+                  </p>
                 </div>
-                <h3 className="text-lg font-semibold text-slate-700 mb-2">
-                  {isAdmin ? 'No video uploaded yet' : 'Coming soon'}
-                </h3>
-                <p className="text-sm text-slate-500">
-                  {isAdmin ?
-                'Upload a video to introduce Pop Up Play to users' :
-                'Check back later for more information'}
-                </p>
-              </div>
+              )}
             </div>
           }
         </motion.div>
@@ -268,10 +276,10 @@ export default function About() {
       {/* Disclaimer at the bottom */}
       <footer className="max-w-4xl mx-auto px-4 pb-6">
         <p className="text-xs text-gray-400 text-center mt-12">
-          Popup-Play is an alternative lifestyle platform designed to connect couples and singles for spontaneous encounters in their local area. By uploading photos or videos to Popup-Play.com, you grant the platform permission to host your content. Subscriptions are billed monthly and will continue until canceled.<br />
+          PopupPlay is an alternative lifestyle platform designed to connect couples and singles for spontaneous encounters in their local area. By uploading photos or videos to Popupplay.fun, you grant the platform permission to host your content. Subscriptions are billed monthly and will continue until canceled.<br />
           Prostitution is strictly prohibited, and all members must meet the legal age requirements of their country. Any violation of these terms will result in immediate account termination without a refund.
         </p>
       </footer>
-    </div>);
-
+    </div>
+  );
 }

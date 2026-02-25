@@ -5,6 +5,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { MessageCircle, Video } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { createPageUrl } from '@/utils';
+import { useSubscription } from '@/lib/SubscriptionContext';
 
 export default function UserMarker({ profile, isCurrentUser, onProfileClick }) {
   const [isHovered, setIsHovered] = useState(false);
@@ -12,14 +13,17 @@ export default function UserMarker({ profile, isCurrentUser, onProfileClick }) {
   const markerRef = useRef(null);
   const closeTimeoutRef = useRef(null);
   const navigate = useNavigate();
+  const { guardAction } = useSubscription();
 
   const handleChatClick = (e) => {
     e.stopPropagation();
+    if (!guardAction('send messages')) return;
     navigate(createPageUrl('Chat') + '?user=' + profile.user_email);
   };
 
   const handleVideoCall = (e) => {
     e.stopPropagation();
+    if (!guardAction('make video calls')) return;
     navigate(createPageUrl('VideoCall') + '?user=' + profile.user_email);
   };
 
@@ -29,7 +33,7 @@ export default function UserMarker({ profile, isCurrentUser, onProfileClick }) {
       html: `
         <div class="relative">
           <div class="w-12 h-12 rounded-full border-3 ${isCurrentUser ? 'border-violet-500' : 'border-rose-400'} overflow-hidden shadow-lg bg-white transform transition-transform hover:scale-110">
-            <img src="${profile.avatar_url || 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=100&h=100&fit=crop'}" class="w-full h-full" style="object-fit: cover; object-position: center; width: 100%; height: 100%; pointer-events: none; user-select: none; -webkit-user-drag: none;" oncontextmenu="return false;" draggable="false" />
+            <img src="${profile.avatar_url || `data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect fill='%23ddd6fe' width='100' height='100'/%3E%3Ccircle cx='50' cy='38' r='18' fill='%23a78bfa'/%3E%3Cellipse cx='50' cy='80' rx='28' ry='22' fill='%23a78bfa'/%3E%3C/svg%3E`}" class="w-full h-full" style="object-fit: cover; object-position: center; width: 100%; height: 100%; pointer-events: none; user-select: none; -webkit-user-drag: none;" oncontextmenu="return false;" draggable="false" />
           </div>
           <div class="absolute left-1/2 transform -translate-x-1/2 w-3 h-3 ${isCurrentUser ? 'bg-violet-500' : 'bg-rose-400'} rotate-45" style="bottom: -6px;"></div>
         </div>
@@ -53,6 +57,9 @@ export default function UserMarker({ profile, isCurrentUser, onProfileClick }) {
       ref={markerRef}
       eventHandlers={{
         mouseover: (e) => {
+          if (!isCurrentUser) {
+            guardAction('view profile details');
+          }
           if (closeTimeoutRef.current) {
             clearTimeout(closeTimeoutRef.current);
           }
@@ -95,7 +102,7 @@ export default function UserMarker({ profile, isCurrentUser, onProfileClick }) {
         >
           <div className="flex items-center gap-2 mb-2">
             <img 
-              src={profile.avatar_url || 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=100&h=100&fit=crop'} 
+              src={profile.avatar_url || `data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect fill='%23ddd6fe' width='100' height='100'/%3E%3Ccircle cx='50' cy='38' r='18' fill='%23a78bfa'/%3E%3Cellipse cx='50' cy='80' rx='28' ry='22' fill='%23a78bfa'/%3E%3C/svg%3E`} 
               className="w-10 h-10 rounded-full object-cover border-2 border-violet-200"
               alt={profile.display_name}
               onContextMenu={(e) => e.preventDefault()}

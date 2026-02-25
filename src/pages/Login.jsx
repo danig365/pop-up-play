@@ -11,11 +11,13 @@ import { getApiBaseUrl } from '@/lib/apiUrl';
 import { createPageUrl } from '@/utils';
 import logoImage from '@/assets/logo.jpeg';
 import PlayButtonRed from '@/assets/PlayButtonRed.jsx';
+import VideoModal from '@/components/popup/VideoModal';
 export default function Login() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
+  const [isVideoModalOpen, setIsVideoModalOpen] = useState(false);
   const navigate = useNavigate();
   const { checkUserAuth } = useAuth();
 
@@ -151,7 +153,13 @@ export default function Login() {
             </p>
             <div className="flex items-center justify-center gap-3 mb-2">
               <PlayButtonRed size={32} />
-              <p className="text-blue-600 font-semibold text-sm">Click Here to Watch Promo</p>
+              <button
+                type="button"
+                onClick={() => setIsVideoModalOpen(true)}
+                className="text-blue-600 font-semibold text-sm hover:text-blue-700 hover:underline transition-colors"
+              >
+                Click Here to Watch Promo
+              </button>
             </div>
             <h1 className="text-2xl font-bold text-slate-900">Welcome to Pop Up Play</h1>
             <p className="text-slate-500 mt-1 text-sm">Sign in to continue</p>
@@ -206,7 +214,7 @@ export default function Login() {
             <Button
               type="submit"
               disabled={isLoading}
-              className="w-full bg-slate-900 hover:bg-slate-800 text-white font-semibold py-3 h-12 rounded-lg transition-all"
+              className="w-full bg-purple-900 hover:bg-purple-800 text-white font-semibold py-3 h-12 rounded-lg transition-all"
             >
               {isLoading ? (
                 <>
@@ -258,7 +266,7 @@ export default function Login() {
           </Button>
 
           {/* Footer Links */}
-          <div className="mt-6 flex justify-between text-sm">
+          <div className="mt-6 flex flex-col sm:flex-row sm:justify-between text-sm gap-4 sm:gap-0">
             <button
               type="button"
               onClick={() => navigate(createPageUrl('ForgotPassword'))}
@@ -266,16 +274,26 @@ export default function Login() {
             >
               Forgot password?
             </button>
-            <button
-              type="button"
-              onClick={() => navigate(createPageUrl('Signup'))}
-              className="text-slate-600 hover:text-slate-900"
-            >
-              Need an account? <span className="font-semibold text-slate-900">Sign up</span>
-            </button>
+            <div className="text-center sm:text-right">
+              <button
+                type="button"
+                onClick={() => navigate(createPageUrl('Signup'))}
+                className="text-slate-600 hover:text-slate-900"
+              >
+                Need an account? <span className="font-semibold text-slate-900">Sign up</span>
+              </button>
+            </div>
           </div>
         </motion.div>
       </motion.div>
+
+      {/* Video Modal */}
+      <VideoModal
+        isOpen={isVideoModalOpen}
+        onClose={() => setIsVideoModalOpen(false)}
+        videoSrc="/video.mp4"
+        title="Pop Up Play Promo"
+      />
     </div>
   );
 }
