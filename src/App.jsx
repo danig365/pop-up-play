@@ -16,6 +16,10 @@ import Signup from './pages/Signup';
 import ForgotPassword from './pages/ForgotPassword';
 import ResetPassword from './pages/ResetPassword';
 import { GoogleOAuthProvider } from '@react-oauth/google';
+import { normalizeGoogleClientId, isGoogleClientIdConfigured } from '@/lib/googleAuth';
+
+const googleClientId = normalizeGoogleClientId(import.meta.env.VITE_GOOGLE_CLIENT_ID);
+const isGoogleOAuthEnabled = isGoogleClientIdConfigured(import.meta.env.VITE_GOOGLE_CLIENT_ID);
 
 const { Pages, Layout, mainPage } = pagesConfig;
 const mainPageKey = mainPage ?? Object.keys(Pages)[0];
@@ -90,21 +94,24 @@ const AuthenticatedApp = () => {
 
 
 function App() {
+  const appContent = (
+    <AuthProvider>
+      <QueryClientProvider client={queryClientInstance}>
+        <Router>
+          <NavigationTracker />
+          <AuthenticatedApp />
+        </Router>
+        <Toaster />
+        <VisualEditAgent />
+      </QueryClientProvider>
+    </AuthProvider>
+  );
 
-  return (
-    <GoogleOAuthProvider clientId={import.meta.env.VITE_GOOGLE_CLIENT_ID || 'your-google-client-id'}>
-      <AuthProvider>
-        <QueryClientProvider client={queryClientInstance}>
-          <Router>
-            <NavigationTracker />
-            <AuthenticatedApp />
-          </Router>
-          <Toaster />
-          <VisualEditAgent />
-        </QueryClientProvider>
-      </AuthProvider>
-    </GoogleOAuthProvider>
-  )
+  if (!isGoogleOAuthEnabled) {
+    return appContent;
+  }
+
+  return <GoogleOAuthProvider clientId={googleClientId}>{appContent}</GoogleOAuthProvider>;
 }
 
 export default App

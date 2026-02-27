@@ -27,6 +27,38 @@ const EMAIL_FROM =
   process.env.SMTP_USER ||
   process.env.GMAIL_USER ||
   'no-reply@popup-play.local';
+function normalizeGoogleClientId(rawValue) {
+  if (!rawValue) return '';
+
+  const trimmed = String(rawValue).trim();
+
+  if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+    try {
+      const url = new URL(trimmed);
+      const normalizedPath = url.pathname.replace(/^\/+|\/+$/g, '');
+      return normalizedPath || url.hostname;
+    } catch {
+      const normalized = trimmed
+        .replace(/^https?:\/\//, '')
+        .replace(/^\/+|\/+$/g, '');
+
+      if (!normalized.includes('/')) {
+        return normalized;
+      }
+
+      const [, ...parts] = normalized.split('/');
+      const fromPath = parts.join('/').replace(/^\/+|\/+$/g, '');
+      return fromPath || normalized.split('/')[0];
+    }
+  }
+
+  return trimmed;
+}
+
+const GOOGLE_CLIENT_ID = normalizeGoogleClientId(
+  process.env.GOOGLE_CLIENT_ID || process.env.VITE_GOOGLE_CLIENT_ID
+);
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 
 // In-memory store for password reset tokens (in production, use database)
 const resetTokens = new Map();
@@ -810,33 +842,57 @@ app.post('/api/auth/reset-password', async (req, res) => {
 // Google OAuth Authentication
 app.post('/api/auth/google', async (req, res) => {
   try {
-    const { token } = req.body;
+    const { code, token } = req.body;
 
-    if (!token) {
-      return res.status(400).json({ error: 'Token is required' });
+    if (!code && !token) {
+      return res.status(400).json({ error: 'Authorization code or ID token is required' });
+    }
+
+    if (!GOOGLE_CLIENT_ID) {
+      return res.status(500).json({ error: 'Google OAuth is not configured: missing GOOGLE_CLIENT_ID' });
+    }
+
+    let idToken = token;
+    if (code) {
+      if (!GOOGLE_CLIENT_SECRET) {
+        return res.status(500).json({ error: 'Google OAuth is not configured: missing GOOGLE_CLIENT_SECRET' });
+      }
+
+      const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          code,
+          client_id: GOOGLE_CLIENT_ID,
+          client_secret: GOOGLE_CLIENT_SECRET,
+          redirect_uri: 'postmessage',
+          grant_type: 'authorization_code',
+        }),
+      });
+
+      const tokenResult = await tokenResponse.json();
+      if (!tokenResponse.ok) {
+        return res.status(401).json({
+          error: tokenResult.error_description || tokenResult.error || 'Google token exchange failed',
+        });
+      }
+
+      idToken = tokenResult.id_token;
+    }
+
+    if (!idToken) {
+      return res.status(401).json({ error: 'Google ID token not available' });
     }
 
     // Verify and decode the Google token
     const { OAuth2Client } = await import('google-auth-library');
-    const client = new OAuth2Client(process.env.VITE_GOOGLE_CLIENT_ID || 'your-google-client-id');
+    const client = new OAuth2Client(GOOGLE_CLIENT_ID);
     
-    let payload;
-    try {
-      const ticket = await client.verifyIdToken({
-        idToken: token,
-        audience: process.env.VITE_GOOGLE_CLIENT_ID || 'your-google-client-id',
-      });
-      payload = ticket.getPayload();
-    } catch (err) {
-      console.log('[DEBUG Google Auth] Token verification failed, treating as valid for demo:', err.message);
-      // For demo purposes, allow the login to proceed
-      // In production, ensure token is properly verified
-      payload = {
-        email: 'demo@example.com',
-        name: 'Demo User',
-        picture: '',
-      };
-    }
+    const ticket = await client.verifyIdToken({
+      idToken,
+      audience: GOOGLE_CLIENT_ID,
+    });
+    const payload = ticket.getPayload();
 
     const { email, name, picture } = payload;
 

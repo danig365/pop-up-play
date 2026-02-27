@@ -8,10 +8,54 @@ import { useGoogleLogin } from '@react-oauth/google';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { getApiBaseUrl } from '@/lib/apiUrl';
+import { isGoogleClientIdConfigured } from '@/lib/googleAuth';
 import { createPageUrl } from '@/utils';
-import logoImage from '@/assets/logo.jpeg';
+import logoImage from '@/assets/logo.png';
 import PlayButtonRed from '@/assets/PlayButtonRed.jsx';
 import VideoModal from '@/components/popup/VideoModal';
+
+const isGoogleOAuthEnabled = isGoogleClientIdConfigured(import.meta.env.VITE_GOOGLE_CLIENT_ID);
+
+function GoogleLoginButton({ isLoading, onSuccess, setError }) {
+  const googleLogin = useGoogleLogin({
+    onSuccess,
+    onError: () => {
+      setError('Google authentication failed. Please try again.');
+    },
+    flow: 'auth-code',
+    scope: 'openid email profile',
+  });
+
+  return (
+    <Button
+      type="button"
+      onClick={() => googleLogin()}
+      disabled={isLoading}
+      className="w-full bg-white hover:bg-slate-50 text-slate-900 font-semibold py-3 h-12 rounded-lg transition-all border border-slate-200 flex items-center justify-center gap-2"
+    >
+      <svg className="w-5 h-5" viewBox="0 0 24 24">
+        <path
+          fill="#4285F4"
+          d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+        />
+        <path
+          fill="#34A853"
+          d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+        />
+        <path
+          fill="#FBBC05"
+          d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"
+        />
+        <path
+          fill="#EA4335"
+          d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"
+        />
+      </svg>
+      Sign in with Google
+    </Button>
+  );
+}
+
 export default function Login() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -26,13 +70,17 @@ export default function Login() {
     setIsLoading(true);
     try {
       console.log('[DEBUG GoogleAuth] Google login initiated');
+
+      if (!credentialResponse?.code) {
+        throw new Error('Google authorization code was not received.');
+      }
       
-      // Send the token to the backend
+      // Send the authorization code to the backend for secure token exchange
       const response = await fetch(`${getApiBaseUrl()}/auth/google`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
-          token: credentialResponse.credential || credentialResponse.access_token 
+          code: credentialResponse.code
         }),
       });
 
@@ -59,14 +107,6 @@ export default function Login() {
       setIsLoading(false);
     }
   };
-
-  const googleLogin = useGoogleLogin({
-    onSuccess: handleGoogleSuccess,
-    onError: () => {
-      setError('Google authentication failed. Please try again.');
-    },
-    flow: 'implicit',
-  });
 
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -148,19 +188,7 @@ export default function Login() {
               alt="Pop Up Play" 
               className="w-20 h-20 mx-auto mb-4 object-contain"
             />
-            <p className="text-violet-600 mb-4 text-sm font-bold leading-relaxed">
-              Connect and play with couples, singles, and alternative lifestyle lovers—right now, not tomorrow, not next week but right now.
-            </p>
-            <div className="flex items-center justify-center gap-3 mb-2">
-              <PlayButtonRed size={32} />
-              <button
-                type="button"
-                onClick={() => setIsVideoModalOpen(true)}
-                className="text-blue-600 font-semibold text-sm hover:text-blue-700 hover:underline transition-colors"
-              >
-                Click Here to Watch Promo
-              </button>
-            </div>
+            
             <h1 className="text-2xl font-bold text-slate-900">Welcome to Pop Up Play</h1>
             <p className="text-slate-500 mt-1 text-sm">Sign in to continue</p>
           </div>
@@ -227,43 +255,20 @@ export default function Login() {
             </Button>
           </form>
 
-          {/* Divider */}
-          <div className="relative my-6">
-            <div className="absolute inset-0 flex items-center">
-              <div className="w-full border-t border-slate-200"></div>
-            </div>
-            <div className="relative flex justify-center text-sm">
-              <span className="px-2 bg-white text-slate-500">Or continue with</span>
-            </div>
-          </div>
+          {isGoogleOAuthEnabled && (
+            <>
+              <div className="relative my-6">
+                <div className="absolute inset-0 flex items-center">
+                  <div className="w-full border-t border-slate-200"></div>
+                </div>
+                <div className="relative flex justify-center text-sm">
+                  <span className="px-2 bg-white text-slate-500">Or continue with</span>
+                </div>
+              </div>
 
-          {/* Google Sign-In Button */}
-          <Button
-            type="button"
-            onClick={() => googleLogin()}
-            disabled={isLoading}
-            className="w-full bg-white hover:bg-slate-50 text-slate-900 font-semibold py-3 h-12 rounded-lg transition-all border border-slate-200 flex items-center justify-center gap-2"
-          >
-            <svg className="w-5 h-5" viewBox="0 0 24 24">
-              <path
-                fill="#4285F4"
-                d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
-              />
-              <path
-                fill="#34A853"
-                d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
-              />
-              <path
-                fill="#FBBC05"
-                d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"
-              />
-              <path
-                fill="#EA4335"
-                d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"
-              />
-            </svg>
-            Sign in with Google
-          </Button>
+              <GoogleLoginButton isLoading={isLoading} onSuccess={handleGoogleSuccess} setError={setError} />
+            </>
+          )}
 
           {/* Footer Links */}
           <div className="mt-6 flex flex-col sm:flex-row sm:justify-between text-sm gap-4 sm:gap-0">

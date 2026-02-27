@@ -11,10 +11,23 @@ export default function PaywallModal() {
   const navigate = useNavigate();
   const isReelsPaywall = /reels/i.test(paywallFeature || '');
 
+  const getReturnToWithReopen = () => {
+    const fallbackReturnTo = paywallReturnTo || `${window.location.pathname}${window.location.search || ''}`;
+    if (!isReelsPaywall) return fallbackReturnTo;
+
+    const [path, search = ''] = fallbackReturnTo.split('?');
+    const params = new URLSearchParams(search);
+    params.set('reopenPaywall', '1');
+    params.set('paywallFeature', paywallFeature || 'view reels');
+
+    const nextSearch = params.toString();
+    return nextSearch ? `${path}?${nextSearch}` : path;
+  };
+
   const handleViewPlans = () => {
     closePaywall();
     navigate(createPageUrl('Pricing'), {
-      state: { returnTo: paywallReturnTo || `${window.location.pathname}${window.location.search || ''}` },
+      state: { returnTo: getReturnToWithReopen() },
     });
   };
 

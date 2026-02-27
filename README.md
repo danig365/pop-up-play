@@ -67,6 +67,10 @@ A modern, interactive social platform built with React and Vite, featuring real-
    EMAIL_FROM=no-reply@popup-play.com
 
    POPUP_ALERT_RADIUS_MILES=60
+
+   VITE_GOOGLE_CLIENT_ID=your_google_web_client_id.apps.googleusercontent.com
+   GOOGLE_CLIENT_ID=your_google_web_client_id.apps.googleusercontent.com
+   GOOGLE_CLIENT_SECRET=your_google_client_secret
    ```
 
 4. **Initialize the database**

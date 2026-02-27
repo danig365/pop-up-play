@@ -10,8 +10,12 @@ export default function LocationService({ onLocationUpdate, autoUpdate = true })
 
   const reverseGeocode = async (lat, lng) => {
     try {
+      // Use zoom=18 for maximum address detail (street-level) — this ensures
+      // Nominatim returns the correct town/suburb and postcode instead of
+      // snapping to the nearest large city.
       const response = await fetch(
-        `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=10&addressdetails=1`
+        `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=18&addressdetails=1`,
+        { headers: { 'Accept-Language': 'en' } }
       );
       
       if (!response.ok) throw new Error('Geocoding service error');
@@ -19,26 +23,33 @@ export default function LocationService({ onLocationUpdate, autoUpdate = true })
       const data = await response.json();
       const address = data.address || {};
       
-      // Try multiple fields to find city name in order of preference
+      // Prefer the most specific locality first, then fall back to broader areas.
+      // Nominatim populates different fields depending on the actual geography;
+      // suburb/neighbourhood help when the user is in a satellite town that
+      // Nominatim classifies as part of a larger city boundary.
       const city = 
-        address.city || 
         address.town || 
+        address.city || 
         address.village || 
+        address.suburb ||
+        address.neighbourhood ||
         address.county ||
         address.district ||
         address.municipality ||
+        address.state_district ||
         'Unknown';
       
-      const zip = address.postcode || address.postal_code || 'Unknown';
+      const zip = address.postcode || address.postal_code || '';
       const country = address.country || 'Unknown';
+      const state = address.state || '';
       
-      console.log('🗺️ Reverse geocoding result:', { city, zip, country, fullAddress: data.address });
+      console.log('🗺️ Reverse geocoding result:', { city, zip, country, state, fullAddress: data.address });
       
-      return { city, zip, country };
+      return { city, zip, country, state };
     } catch (err) {
       console.error('❌ Reverse geocoding failed:', err);
       // Return approximate location from coordinates
-      return { city: 'Location Found', zip: 'Unknown', country: 'Unknown' };
+      return { city: 'Location Found', zip: '', country: 'Unknown', state: '' };
     }
   };
 
@@ -63,6 +74,7 @@ export default function LocationService({ onLocationUpdate, autoUpdate = true })
           city: geoData.city,
           zip: geoData.zip,
           country: geoData.country,
+          state: geoData.state,
           timestamp: new Date().toISOString()
         };
 
@@ -88,9 +100,9 @@ export default function LocationService({ onLocationUpdate, autoUpdate = true })
         setStatus('error');
       },
       { 
-        enableHighAccuracy: false,  // Set to false for faster results
-        timeout: 20000,             // Increased from 10s to 20s
-        maximumAge: 300000          // Cache location for 5 minutes
+        enableHighAccuracy: true,   // Use GPS for precise coordinates
+        timeout: 30000,             // Allow 30s for GPS lock
+        maximumAge: 60000           // Cache location for 1 minute only
       }
     );
   }, [onLocationUpdate]);
@@ -125,7 +137,11 @@ export default function LocationService({ onLocationUpdate, autoUpdate = true })
           </div>
           <div className="flex-1">
             <p className="text-sm font-medium text-slate-800">{locationData.city}</p>
-            <p className="text-xs text-slate-500">ZIP: {locationData.zip}</p>
+            {locationData.zip ? (
+              <p className="text-xs text-slate-500">ZIP: {locationData.zip}</p>
+            ) : (
+              <p className="text-xs text-slate-400 italic">ZIP not available</p>
+            )}
           </div>
           <Button
           variant="ghost"

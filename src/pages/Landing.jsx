@@ -1,219 +1,206 @@
 import React, { useState } from 'react';
 import { motion } from 'framer-motion';
-import { Button } from '@/components/ui/button';
-import { Link } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { createPageUrl } from '@/utils';
-import { Home, Image as ImageIcon, ShoppingCart, Facebook, Twitter, Instagram, ChevronRight, Menu, X } from 'lucide-react';
-import heroImage from '@/assets/Untitled_design-removebg-preview.png';
+import VideoModal from '@/components/popup/VideoModal';
+
+const logoImage = new URL('../assets/logo.png', import.meta.url).href;
+const bgImage = new URL('../assets/WhatsApp Image 2026-02-26 at 7.48.18 AM.jpeg', import.meta.url).href;
+
+function PlayButton({ className = '', size = 80, onClick }) {
+  return (
+    <div
+      className={`rounded-full bg-white flex items-center justify-center shadow-lg cursor-pointer hover:scale-105 transition-transform ${className}`}
+      style={{ width: size, height: size }}
+      onClick={onClick}
+    >
+      <svg
+        width={size * 0.45}
+        height={size * 0.45}
+        viewBox="0 0 24 24"
+        fill="none"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <polygon points="4,2 4,22 22,12" fill="#C057D6" />
+      </svg>
+    </div>
+  );
+}
 
 export default function Landing() {
-  const [currentSlide, setCurrentSlide] = useState(0);
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const slides = [0, 1, 2];
+  const [rememberMe, setRememberMe] = useState(false);
+  const [isVideoModalOpen, setIsVideoModalOpen] = useState(false);
+  const navigate = useNavigate();
 
-  const handleNextSlide = () => {
-    setCurrentSlide((prev) => (prev + 1) % slides.length);
+  // Auto-redirect if age was previously confirmed
+  React.useEffect(() => {
+    if (localStorage.getItem('age_confirmed') === 'true') {
+      navigate(createPageUrl('Login'), { replace: true });
+    }
+  }, [navigate]);
+
+  const handleYes = () => {
+    if (rememberMe) {
+      localStorage.setItem('age_confirmed', 'true');
+    }
+    navigate(createPageUrl('Login'));
   };
 
   return (
-    <div className="min-h-screen w-full overflow-hidden bg-black relative">
-      {/* Fullscreen Background with Gradient Overlay */}
-      <div 
-        className="absolute inset-0"
-        style={{
-          background: `
-            linear-gradient(90deg, 
-              rgba(220, 38, 38, 0.3) 0%,
-              rgba(0, 0, 0, 0.5) 50%,
-              rgba(59, 130, 246, 0.3) 100%
-            )
-          `,
-          backdropFilter: 'blur(2px)'
-        }}
-      >
-        {/* Animated gradient background */}
-        <div className="absolute inset-0 bg-gradient-to-b from-transparent via-black/30 to-black/60"></div>
+    <div className="min-h-screen w-full overflow-hidden relative">
+      {/* Mobile-only full-screen background image */}
+      <img
+        src={bgImage}
+        alt=""
+        className="md:hidden absolute inset-0 w-full h-full object-cover"
+      />
+      {/* Mobile-only purple tint overlay */}
+      <div className="md:hidden absolute inset-0" style={{ backgroundColor: 'rgba(200, 142, 245, 0.35)' }} />
+
+      {/* ===== DESKTOP LAYOUT (md+) ===== */}
+      <div className="hidden md:flex min-h-screen relative z-10">
+        {/* Left half — photo + tint */}
+        <div className="w-1/2 relative overflow-hidden">
+          <img
+            src={bgImage}
+            alt=""
+            className="absolute inset-0 w-full h-full object-cover"
+          />
+          <div className="absolute inset-0" style={{ backgroundColor: 'rgba(200, 142, 245, 0.35)' }} />
+        </div>
+
+        {/* Play button — centered on the divider */}
+        <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-30">
+          <PlayButton size={100} onClick={() => setIsVideoModalOpen(true)} />
+        </div>
+
+        {/* Right half — solid purple bg + card + tagline */}
+        <div className="w-1/2 flex flex-col items-center justify-center px-8 lg:px-16 relative z-10" style={{ backgroundColor: '#C88EF5' }}>
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.5 }}
+            className="w-full max-w-lg"
+          >
+            {/* Age gate card */}
+            <div
+              className="rounded-3xl px-8 py-10 text-center"
+              style={{ background: 'rgba(0, 0, 0, 0.15)', backdropFilter: 'blur(8px)', WebkitBackdropFilter: 'blur(8px)' }}
+            >
+              <div className="flex justify-center mb-4">
+                <img
+                  src={logoImage}
+                  alt="Pop-Up Play"
+                  className="h-14 w-auto object-contain"
+                />
+              </div>
+
+              <h1 className="text-3xl lg:text-4xl font-bold text-white mb-8 leading-tight">
+                Are You Over 18 Years Of Age?
+              </h1>
+
+              <div className="flex flex-row items-center justify-center gap-4 mb-6">
+                <button
+                  onClick={handleYes}
+                  className="min-w-[120px] px-8 py-3 rounded-full bg-pink-200 text-pink-600 text-lg font-semibold hover:bg-pink-300 transition"
+                >
+                  Yes
+                </button>
+                <button
+                  className="min-w-[120px] px-8 py-3 rounded-full border-2 border-white text-white text-lg font-semibold hover:bg-white/10 transition"
+                >
+                  No
+                </button>
+              </div>
+
+              <label className="inline-flex items-center gap-3 text-white text-lg font-medium cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={rememberMe}
+                  onChange={(e) => setRememberMe(e.target.checked)}
+                  className="w-5 h-5 rounded border-white/60 bg-transparent accent-purple-400"
+                />
+                Remember Me
+              </label>
+            </div>
+
+            {/* Tagline */}
+            <p className="mt-6 text-white text-xl lg:text-2xl font-medium leading-relaxed text-center">
+              Connect and play with couples, singles, and alternative lifestyle lovers—right now, not tomorrow, not next week but right now.
+            </p>
+          </motion.div>
+        </div>
       </div>
 
-      {/* Center Hero Image */}
-      <motion.div
-        className="absolute inset-0 flex items-center justify-center px-4"
-        initial={{ scale: 0.95, opacity: 0 }}
-        animate={{ scale: 1, opacity: 1 }}
-        transition={{ duration: 1 }}
-      >
-        <img
-          src={heroImage}
-          alt="Pop-Up Play"
-          className="max-h-[90vh] md:max-h-[85vh] w-auto object-contain drop-shadow-2xl"
-          onError={(e) => {
-            console.error('Image failed to load:', e);
-            e.target.src = 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22300%22 height=%22400%22 viewBox=%220 0 300 400%22%3E%3Crect fill=%22%23333%22 width=%22300%22 height=%22400%22/%3E%3Ctext x=%2250%25%22 y=%2250%25%22 dominant-baseline=%22middle%22 text-anchor=%22middle%22 font-family=%22Arial%22 font-size=%2224%22 fill=%22%23999%22%3EImage not found%3C/text%3E%3C/svg%3E';
-          }}
-        />
-      </motion.div>
+      {/* ===== MOBILE LAYOUT (below md) ===== */}
+      {/* Mobile play button — top right */}
+      <div className="md:hidden absolute top-6 right-6 z-20">
+        <PlayButton size={70} onClick={() => setIsVideoModalOpen(true)} />
+      </div>
 
-      {/* Left Floating Toolbar - Extended */}
-      <motion.div
-        className={`fixed left-0 top-0 h-full z-40 flex flex-col items-center justify-center gap-8 ${
-          mobileMenuOpen ? 'w-20 bg-black/80' : 'w-20'
-        }`}
-        initial={{ opacity: 0, x: -20 }}
-        animate={{ opacity: 1, x: 0 }}
-        transition={{ delay: 0.3 }}
-      >
-        {/* Icon Stack */}
-        <div className="flex flex-col gap-8 items-center">
-          <motion.button 
-            whileHover={{ scale: 1.2 }}
-            className="text-pink-400 hover:text-pink-300 transition"
+      <div className="flex md:hidden min-h-screen relative z-10 items-center justify-center px-4 py-6">
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.5 }}
+          className="w-full max-w-sm"
+        >
+          {/* Age gate card */}
+          <div
+            className="rounded-2xl px-5 py-7 text-center"
+            style={{ background: 'rgba(0, 0, 0, 0.15)', backdropFilter: 'blur(8px)', WebkitBackdropFilter: 'blur(8px)' }}
           >
-            <Home className="w-6 h-6" />
-          </motion.button>
-          <motion.button 
-            whileHover={{ scale: 1.2 }}
-            className="text-pink-400 hover:text-pink-300 transition"
-          >
-            <ImageIcon className="w-6 h-6" />
-          </motion.button>
-          <motion.button 
-            whileHover={{ scale: 1.2 }}
-            className="text-pink-400 hover:text-pink-300 transition"
-          >
-            <ShoppingCart className="w-6 h-6" />
-          </motion.button>
-        </div>
+            <div className="flex justify-center mb-3">
+              <img
+                src={logoImage}
+                alt="Pop-Up Play"
+                className="h-10 w-auto object-contain"
+              />
+            </div>
 
-        {/* Vertical Divider */}
-        <div className="w-px h-16 bg-gradient-to-b from-pink-400 to-blue-400"></div>
+            <h1 className="text-xl font-bold text-white mb-5 leading-tight">
+              Are You Over 18 Years Of Age?
+            </h1>
 
-        {/* Social Icons */}
-        <div className="flex flex-col gap-6 items-center">
-          <motion.a 
-            href="#" 
-            whileHover={{ scale: 1.2 }}
-            className="text-pink-400 hover:text-pink-300 transition"
-          >
-            <Facebook className="w-5 h-5" />
-          </motion.a>
-          <motion.a 
-            href="#" 
-            whileHover={{ scale: 1.2 }}
-            className="text-pink-400 hover:text-pink-300 transition"
-          >
-            <Twitter className="w-5 h-5" />
-          </motion.a>
-          <motion.a 
-            href="#" 
-            whileHover={{ scale: 1.2 }}
-            className="text-pink-400 hover:text-pink-300 transition"
-          >
-            <Instagram className="w-5 h-5" />
-          </motion.a>
-        </div>
-      </motion.div>
+            <div className="flex flex-row items-center justify-center gap-3 mb-4">
+              <button
+                onClick={handleYes}
+                className="min-w-[100px] px-6 py-2.5 rounded-full bg-pink-200 text-pink-600 text-base font-semibold hover:bg-pink-300 transition"
+              >
+                Yes
+              </button>
+              <button
+                className="min-w-[100px] px-6 py-2.5 rounded-full border-2 border-white text-white text-base font-semibold hover:bg-white/10 transition"
+              >
+                No
+              </button>
+            </div>
 
-      {/* Top Center Slider Indicators */}
-      <motion.div
-        className="fixed top-8 left-1/2 transform -translate-x-1/2 z-40 flex gap-3"
-        initial={{ opacity: 0, y: -10 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.2 }}
-      >
-        {slides.map((_, index) => (
-          <motion.div
-            key={index}
-            className={`h-1.5 rounded-full transition-all ${
-              index === currentSlide 
-                ? 'w-8 bg-pink-500' 
-                : 'w-1.5 bg-gray-500'
-            }`}
-            whileHover={{ scale: 1.2 }}
-          />
-        ))}
-      </motion.div>
+            <label className="inline-flex items-center gap-2.5 text-white text-base font-medium cursor-pointer">
+              <input
+                type="checkbox"
+                checked={rememberMe}
+                onChange={(e) => setRememberMe(e.target.checked)}
+                className="w-4 h-4 rounded border-white/60 bg-transparent accent-purple-400"
+              />
+              Remember Me
+            </label>
+          </div>
 
-      {/* Primary CTA Button - Responsive */}
-      <motion.div
-        className="fixed left-1/2 top-1/2 transform -translate-x-1/2 -translate-y-1/2 z-30 md:left-1/4"
-        initial={{ opacity: 0, x: -30 }}
-        animate={{ opacity: 1, x: 0 }}
-        transition={{ delay: 0.5 }}
-      >
-        <Link to={createPageUrl('Signup')}>
-          <motion.button
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
-            className="px-6 md:px-12 py-3 md:py-4 border-2 border-pink-500 text-pink-500 font-bold uppercase text-sm md:text-lg tracking-widest hover:bg-pink-500/10 transition-all duration-300 backdrop-blur-sm whitespace-nowrap"
-            style={{
-              boxShadow: '0 0 20px rgba(236, 72, 153, 0.5)'
-            }}
-          >
-            START
-          </motion.button>
-        </Link>
-      </motion.div>
-
-      {/* Right Side Micro Content Block - Responsive */}
-      <motion.div
-        className="fixed right-4 md:right-12 bottom-24 md:bottom-32 z-30 max-w-xs text-right"
-        initial={{ opacity: 0, x: 20 }}
-        animate={{ opacity: 1, x: 0 }}
-        transition={{ delay: 0.4 }}
-      >
-        <div className="space-y-2 md:space-y-3">
-          <h3 className="text-xs md:text-sm font-bold uppercase tracking-widest text-pink-400">
-            Pop-Up Play
-          </h3>
-          <p className="text-xs md:text-sm text-gray-300 leading-relaxed">
-            Connect with people around you. Find genuine connections on an interactive map and chat with people nearby in your city.
+          {/* Tagline */}
+          <p className="mt-4 text-white text-lg font-medium leading-relaxed text-center px-2">
+            Connect and play with couples, singles, and alternative lifestyle lovers—right now, not tomorrow, not next week but right now.
           </p>
-        </div>
-      </motion.div>
+        </motion.div>
+      </div>
 
-      {/* Right-Side Arrow Control - Responsive */}
-      <motion.button
-        onClick={handleNextSlide}
-        className="fixed right-4 md:right-8 top-1/2 transform -translate-y-1/2 z-40 p-2 md:p-3 rounded-full border border-pink-500/50 hover:border-pink-500 transition-all duration-300"
-        whileHover={{ scale: 1.1, boxShadow: '0 0 20px rgba(236, 72, 153, 0.5)' }}
-        whileTap={{ scale: 0.95 }}
-      >
-        <ChevronRight className="w-5 h-5 md:w-6 md:h-6 text-pink-400" />
-      </motion.button>
-
-      {/* Bottom Auth Buttons - Responsive */}
-      <motion.div
-        className="fixed bottom-4 md:bottom-8 left-1/2 transform -translate-x-1/2 z-40 flex gap-3 md:gap-6 px-4 w-full md:w-auto md:px-0"
-        initial={{ opacity: 0, y: 30 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.6 }}
-      >
-        <Link to={createPageUrl('Login')} className="flex-1 md:flex-none">
-          <motion.button
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
-            className="w-full px-6 md:px-8 py-2 md:py-3 border-2 border-gray-500 text-gray-300 font-semibold uppercase text-xs md:text-sm tracking-wider hover:border-pink-500 hover:text-pink-400 transition-all duration-300 backdrop-blur-sm"
-          >
-            Login
-          </motion.button>
-        </Link>
-        <Link to={createPageUrl('Signup')} className="flex-1 md:flex-none">
-          <motion.button
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
-            className="w-full px-6 md:px-8 py-2 md:py-3 border-2 border-pink-500 text-pink-400 font-semibold uppercase text-xs md:text-sm tracking-wider hover:bg-pink-500/20 transition-all duration-300 backdrop-blur-sm"
-            style={{
-              boxShadow: '0 0 15px rgba(236, 72, 153, 0.4)'
-            }}
-          >
-            Sign Up
-          </motion.button>
-        </Link>
-      </motion.div>
-
-      {/* Animated Glow Elements */}
-      <div className="absolute top-20 left-20 w-32 h-32 md:w-64 md:h-64 bg-red-500/20 rounded-full blur-3xl opacity-20 animate-pulse"></div>
-      <div className="absolute bottom-20 right-20 w-32 h-32 md:w-64 md:h-64 bg-blue-500/20 rounded-full blur-3xl opacity-20 animate-pulse"></div>
+      {/* Video Modal */}
+      <VideoModal
+        isOpen={isVideoModalOpen}
+        onClose={() => setIsVideoModalOpen(false)}
+        videoSrc="/video.mp4"
+        title="Pop Up Play Promo"
+      />
     </div>
   );
 }

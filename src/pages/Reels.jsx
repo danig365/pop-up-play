@@ -14,14 +14,14 @@ export default function Reels() {
   const [user, setUser] = useState(null);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [showUpload, setShowUpload] = useState(false);
-  const [reelsLocked, setReelsLocked] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
   const [touchStart, setTouchStart] = useState(0);
   const [touchEnd, setTouchEnd] = useState(0);
   const containerRef = useRef(null);
   const queryClient = useQueryClient();
-  const { guardAction, hasAccess, paywallOpen, closePaywall } = useSubscription();
+  const { guardAction, hasAccess, paywallOpen, isLoading: subscriptionLoading } = useSubscription();
   const paywallTimerRef = useRef(null);
+  const pendingReopenPaywallFeatureRef = useRef(null);
 
   useEffect(() => {
     const loadUser = async () => {
@@ -39,10 +39,33 @@ export default function Reels() {
     const reelIndex = params.get('reelIndex');
     if (reelIndex !== null) {
       setCurrentIndex(parseInt(reelIndex, 10));
-      // Clean up URL
-      window.history.replaceState({}, '', window.location.pathname);
+      params.delete('reelIndex');
+    }
+
+    const hasReopenFlag = params.get('reopenPaywall') === '1';
+    if (hasReopenFlag) {
+      pendingReopenPaywallFeatureRef.current = params.get('paywallFeature') || 'view reels';
+      params.delete('reopenPaywall');
+    }
+    if (params.has('paywallFeature')) {
+      params.delete('paywallFeature');
+    }
+
+    if (reelIndex !== null || hasReopenFlag) {
+      const nextSearch = params.toString();
+      const nextUrl = nextSearch ? `${window.location.pathname}?${nextSearch}` : window.location.pathname;
+      window.history.replaceState({}, '', nextUrl);
     }
   }, []);
+
+  useEffect(() => {
+    if (subscriptionLoading || hasAccess) return;
+
+    if (pendingReopenPaywallFeatureRef.current) {
+      guardAction(pendingReopenPaywallFeatureRef.current);
+      pendingReopenPaywallFeatureRef.current = null;
+    }
+  }, [subscriptionLoading, hasAccess, guardAction]);
 
   const { data: reels = [], isLoading } = useQuery({
     queryKey: ['reels'],
@@ -78,7 +101,6 @@ export default function Reels() {
   };
 
   const handleTouchEnd = () => {
-    if (reelsLocked && !hasAccess) return;
     if (!touchStart || !touchEnd) return;
     
     const distance = touchStart - touchEnd;
@@ -99,7 +121,6 @@ export default function Reels() {
   // Handle wheel navigation (desktop)
   const handleWheel = (e) => {
     e.preventDefault();
-    if (reelsLocked && !hasAccess) return;
     
     if (e.deltaY > 0) {
       handleNextReel();
@@ -138,7 +159,6 @@ export default function Reels() {
   // Show paywall after 2 seconds for non-access users
   useEffect(() => {
     if (hasAccess) {
-      setReelsLocked(false);
       clearTimeout(paywallTimerRef.current);
       return;
     }
@@ -146,9 +166,8 @@ export default function Reels() {
     // Only start timer after both reel and profile are loaded for the current index
     const reelLoaded = reels.length > 0 && reels[currentIndex];
     const profileLoaded = reelLoaded && getProfileForReel(reels[currentIndex]);
-    if (!hasAccess && reelLoaded && profileLoaded && !paywallOpen && !reelsLocked) {
+    if (!hasAccess && reelLoaded && profileLoaded && !paywallOpen) {
       paywallTimerRef.current = setTimeout(() => {
-        setReelsLocked(true);
         guardAction('view reels');
       }, 2000);
       return () => {
@@ -157,7 +176,7 @@ export default function Reels() {
     } else {
       clearTimeout(paywallTimerRef.current);
     }
-  }, [hasAccess, reels, currentIndex, paywallOpen, profiles, reelsLocked]);
+  }, [hasAccess, reels, currentIndex, paywallOpen, profiles, guardAction]);
 
   const handleUploadComplete = () => {
     setShowUpload(false);
@@ -266,8 +285,7 @@ export default function Reels() {
               <ReelViewer
                 reel={reels[currentIndex]}
                 profile={getProfileForReel(reels[currentIndex])}
-                isActive={!(reelsLocked && !hasAccess)}
-                blocked={reelsLocked && !hasAccess}
+                isActive={true}
                 onToggleMute={() => setIsMuted(!isMuted)}
                 isMuted={isMuted}
                 reelIndex={currentIndex} />
@@ -275,10 +293,6 @@ export default function Reels() {
           )}
         </AnimatePresence>
       </div>
-
-      {reelsLocked && !hasAccess && (
-        <div className="absolute inset-0 bg-black/85 z-40 pointer-events-auto" />
-      )}
 
       {/* Upload Modal */}
       <AnimatePresence>

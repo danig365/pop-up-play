@@ -96,11 +96,12 @@ export default function Home() {
   const handleLocationUpdate = useCallback((locationInfo) => {
     setUserLocation(locationInfo);
     if (user?.email) {
-      // Update GPS coordinates and location name
+      // Update GPS coordinates, location name, AND zip code
       const updateData = {
         latitude: locationInfo.latitude,
         longitude: locationInfo.longitude,
-        location: locationInfo.city, // Save the city/location name
+        location: locationInfo.city,
+        zip_code: locationInfo.zip || null,
         last_location_update: locationInfo.timestamp
       };
       
