@@ -1,14 +1,16 @@
 import React, { useState, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
-import { ArrowLeft, MapPin, Loader2, Filter } from 'lucide-react';
+import { ArrowLeft, MapPin, Loader2, Filter, Pencil, Trash2, Save, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Link, useNavigate } from 'react-router-dom';
 import { createPageUrl } from '@/utils';
 import BlockButton from '@/components/blocking/BlockButton';
 import { useSubscription } from '@/lib/SubscriptionContext';
+import { getApiBaseUrl } from '@/lib/apiUrl';
 
 // State name to abbreviation mapping
 const stateMapping = {
@@ -71,11 +73,189 @@ const calculateDistance = (lat1, lon1, lat2, lon2) => {
 
 export default function AllProfiles() {
   const [user, setUser] = useState(null);
+  const [editingProfile, setEditingProfile] = useState(null);
+  const [editForm, setEditForm] = useState({});
+  const [confirmDelete, setConfirmDelete] = useState(null);
   const [interestFilter, setInterestFilter] = useState('');
   const [locationFilter, setLocationFilter] = useState('');
   const [profilesWithDistance, setProfilesWithDistance] = useState([]);
   const navigate = useNavigate();
   const { guardAction } = useSubscription();
+
+  const queryClient = useQueryClient();
+
+  const resolveCountryCode = (countryValue) => {
+    const normalized = String(countryValue || '').trim().toLowerCase();
+    if (!normalized) return '';
+    const map = {
+      us: 'us',
+      usa: 'us',
+      'united states': 'us',
+      'united states of america': 'us',
+      nl: 'nl',
+      netherlands: 'nl',
+      nederland: 'nl',
+    };
+    return map[normalized] || '';
+  };
+
+  const getCountryCandidatesForPostal = (postalCode, countryValue) => {
+    const candidates = [];
+    const fromProfileCountry = resolveCountryCode(countryValue);
+    if (fromProfileCountry) candidates.push(fromProfileCountry);
+
+    if (/[a-zA-Z]/.test(postalCode)) {
+      candidates.push('nl');
+    }
+
+    candidates.push('us');
+    return [...new Set(candidates)];
+  };
+
+  const lookupWithNominatim = async (postalCode, countryHint = '') => {
+    const params = new URLSearchParams({
+      postalcode: postalCode,
+      format: 'json',
+      addressdetails: '1',
+      limit: '1',
+    });
+
+    if (countryHint) {
+      params.set('country', countryHint);
+    }
+
+    const response = await fetch(`https://nominatim.openstreetmap.org/search?${params.toString()}`);
+    if (!response.ok) return null;
+
+    const data = await response.json();
+    const address = data?.[0]?.address;
+    if (!address) return null;
+
+    const city = address.city || address.town || address.village || address.municipality || address.county || '';
+    const state = address.state || address.region || '';
+    const country = address.country || countryHint || '';
+
+    if (!city && !state && !country) return null;
+    return { city, state, country };
+  };
+
+  const fetchCityFromZipCode = async (zipCode) => {
+    let postalCode = String(zipCode || '').trim().replace(/\s+/g, ' ');
+    if (!postalCode || postalCode.length < 4) return;
+    if (/[a-zA-Z]/.test(postalCode)) {
+      postalCode = postalCode.toUpperCase();
+    }
+
+    const countryCandidates = getCountryCandidatesForPostal(postalCode, editForm.country);
+
+    try {
+      for (const countryCode of countryCandidates) {
+        const response = await fetch(`https://api.zippopotam.us/${countryCode}/${encodeURIComponent(postalCode)}`);
+        if (!response.ok) continue;
+
+        const data = await response.json();
+        const city = data.places?.[0]?.['place name'] || '';
+        const state = data.places?.[0]?.['state abbreviation'] || data.places?.[0]?.state || '';
+        const country = data.country || (countryCode === 'nl' ? 'Netherlands' : 'United States');
+        setEditForm(f => ({ ...f, city, state, country }));
+        return;
+      }
+
+      const countryHints = [
+        editForm.country,
+        ...(countryCandidates.map((code) => (code === 'nl' ? 'Netherlands' : code === 'us' ? 'United States' : ''))),
+        '',
+      ].filter(Boolean);
+
+      for (const hint of [...new Set(countryHints)]) {
+        const resolved = await lookupWithNominatim(postalCode, hint);
+        if (resolved) {
+          setEditForm(f => ({ ...f, ...resolved }));
+          return;
+        }
+      }
+
+      setEditForm(f => ({ ...f, city: '', state: '', country: '' }));
+    } catch (error) {
+      console.error('Error fetching location data:', error);
+      setEditForm(f => ({ ...f, city: '', state: '', country: '' }));
+    }
+  };
+
+  const updateProfileMutation = useMutation({
+    mutationFn: async ({ id, data }) => base44.entities.UserProfile.update(id, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['allProfiles'] });
+      setEditingProfile(null);
+    },
+    onError: (error) => {
+      console.error('Failed to update profile:', error);
+    },
+  });
+
+  const deleteProfileMutation = useMutation({
+    mutationFn: async (profile) => {
+      // Delete the entire user account and all related data (not just the profile)
+      const response = await fetch(`${getApiBaseUrl()}/admin/user/${encodeURIComponent(profile.user_email)}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('popup_auth_token')}`,
+          'x-user-email': JSON.parse(localStorage.getItem('popup_auth_user') || '{}').email || '',
+        },
+      });
+      if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.error || 'Failed to delete user');
+      }
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['allProfiles'] });
+      setConfirmDelete(null);
+    },
+  });
+
+  const handleEditClick = (profile, e) => {
+    e.stopPropagation();
+    setEditForm({
+      display_name: profile.display_name || '',
+      bio: profile.bio || '',
+      age: profile.age || '',
+      gender: profile.gender || '',
+      interested_in: profile.interested_in || '',
+      looking_for: profile.looking_for || '',
+      city: profile.city || '',
+      state: profile.state || '',
+      zip_code: profile.zip_code || '',
+      country: profile.country || '',
+    });
+    setEditingProfile(profile);
+  };
+
+  const handleSaveEdit = () => {
+    if (!editingProfile) return;
+
+    const ageRaw = typeof editForm.age === 'string' ? editForm.age.trim() : editForm.age;
+    const normalizedAge = ageRaw === '' || ageRaw === null || ageRaw === undefined
+      ? null
+      : Number(ageRaw);
+
+    const payload = {
+      ...editForm,
+      display_name: (editForm.display_name || '').trim(),
+      bio: editForm.bio || '',
+      gender: editForm.gender || '',
+      interested_in: editForm.interested_in || '',
+      looking_for: editForm.looking_for || '',
+      zip_code: (editForm.zip_code || '').trim(),
+      city: editForm.city || '',
+      state: editForm.state || '',
+      country: editForm.country || '',
+      age: Number.isFinite(normalizedAge) ? normalizedAge : null,
+    };
+
+    updateProfileMutation.mutate({ id: editingProfile.id, data: payload });
+  };
 
   useEffect(() => {
     const loadUser = async () => {
@@ -119,6 +299,27 @@ export default function AllProfiles() {
     },
     enabled: !!user?.email
   });
+
+  // Admin-only: fetch all subscriptions to show Free/Paid on each card
+  const { data: allSubscriptions = [] } = useQuery({
+    queryKey: ['allSubscriptions'],
+    queryFn: async () => base44.entities.UserSubscription.list(),
+    enabled: user?.role === 'admin',
+  });
+
+  // Build a quick lookup map: user_email -> subscription status
+  const subscriptionMap = React.useMemo(() => {
+    const map = {};
+    allSubscriptions.forEach(sub => {
+      // Keep the most relevant (active > trial > others)
+      const existing = map[sub.user_email];
+      const isPriority = (s) => s === 'active' || s === 'trial';
+      if (!existing || (!isPriority(existing.status) && isPriority(sub.status))) {
+        map[sub.user_email] = sub;
+      }
+    });
+    return map;
+  }, [allSubscriptions]);
 
   // Calculate distances based on ZIP codes
   useEffect(() => {
@@ -314,13 +515,32 @@ export default function AllProfiles() {
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: index * 0.05 }}
                 whileHover={{ scale: 1.02 }}
-                className="cursor-pointer"
+                className="cursor-pointer relative"
                 onClick={() => {
                   if (!guardAction('view full profiles')) return;
                   navigate(createPageUrl('Profile') + '?user=' + profile.user_email + '&back=AllProfiles');
                 }}
               >
                 <div className="bg-white rounded-2xl shadow-lg overflow-hidden">
+                  {/* Admin controls */}
+                  {user?.role === 'admin' && profile.user_email !== user?.email && (
+                    <div className="absolute top-2 left-2 z-10 flex gap-1" onClick={e => e.stopPropagation()}>
+                      <button
+                        onClick={(e) => handleEditClick(profile, e)}
+                        className="bg-white/90 hover:bg-white text-purple-700 rounded-full p-1.5 shadow"
+                        title="Edit profile"
+                      >
+                        <Pencil className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setConfirmDelete(profile); }}
+                        className="bg-white/90 hover:bg-white text-red-500 rounded-full p-1.5 shadow"
+                        title="Delete profile"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  )}
                   {/* Avatar */}
                   <div className="aspect-square relative">
                     <img
@@ -335,7 +555,7 @@ export default function AllProfiles() {
 
                   {/* Info */}
                   <div className="p-4">
-                    <div className="flex items-center gap-2 mb-1">
+                    <div className="flex items-center gap-2 mb-1 flex-wrap">
                       <h3 className="text-lg font-semibold text-slate-800">
                         {profile.display_name || 'Anonymous'}
                         {profile.age && <span className="text-slate-500">, {profile.age}</span>}
@@ -345,6 +565,19 @@ export default function AllProfiles() {
                           You
                         </span>
                       )}
+                      {user?.role === 'admin' && (() => {
+                        const sub = subscriptionMap[profile.user_email];
+                        const isPaid = sub && (sub.status === 'active' || sub.status === 'trial');
+                        return (
+                          <span className={`px-2 py-0.5 rounded-full text-xs font-bold ${
+                            isPaid
+                              ? 'bg-emerald-100 text-emerald-700'
+                              : 'bg-slate-100 text-slate-500'
+                          }`}>
+                            {isPaid ? 'Paid' : 'Free'}
+                          </span>
+                        );
+                      })()}
                     </div>
                     
                     <div className="flex items-center justify-between text-sm text-slate-500 mb-2">
@@ -411,6 +644,151 @@ export default function AllProfiles() {
             ))}
           </div>
         )}
+
+        <Dialog open={!!editingProfile} onOpenChange={(open) => !open && setEditingProfile(null)}>
+          <DialogContent className="max-w-md max-h-[90vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>Edit Profile</DialogTitle>
+            </DialogHeader>
+
+            <div className="space-y-3 py-2">
+              {[
+                { key: 'display_name', label: 'Display Name' },
+                { key: 'bio', label: 'Bio', multiline: true },
+                { key: 'age', label: 'Age', type: 'number' },
+                { key: 'gender', label: 'Gender' },
+                { key: 'interested_in', label: 'Interested In' },
+                { key: 'looking_for', label: 'Looking For' },
+              ].map(({ key, label, multiline, type }) => (
+                <div key={key}>
+                  <label className="text-xs font-medium text-slate-600 mb-1 block">{label}</label>
+                  {multiline ? (
+                    <textarea
+                      value={editForm[key] || ''}
+                      onChange={(e) => setEditForm((f) => ({ ...f, [key]: e.target.value }))}
+                      className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-purple-400 focus:outline-none resize-none"
+                      rows={3}
+                    />
+                  ) : (
+                    <Input
+                      type={type || 'text'}
+                      value={editForm[key] || ''}
+                      onChange={(e) => setEditForm((f) => ({ ...f, [key]: e.target.value }))}
+                      className="rounded-lg border-slate-200 focus:border-purple-400"
+                    />
+                  )}
+                </div>
+              ))}
+
+              <div>
+                <label className="text-xs font-medium text-slate-600 mb-1 block">ZIP Code</label>
+                <Input
+                  type="text"
+                  value={editForm.zip_code || ''}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setEditForm((f) => ({ ...f, zip_code: val }));
+                    if (val.length >= 5) {
+                      fetchCityFromZipCode(val);
+                    }
+                  }}
+                  className="rounded-lg border-slate-200 focus:border-purple-400"
+                  placeholder="Enter ZIP to auto-fill city/state"
+                />
+              </div>
+
+              <div className="grid grid-cols-3 gap-3">
+                <div>
+                  <label className="text-xs font-medium text-slate-600 mb-1 block">City</label>
+                  <Input
+                    type="text"
+                    value={editForm.city || ''}
+                    placeholder="Auto-filled based on ZIP Code"
+                    className="rounded-lg border-slate-200 bg-gray-50"
+                    disabled={true}
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-slate-600 mb-1 block">State</label>
+                  <Input
+                    type="text"
+                    value={editForm.state || ''}
+                    placeholder="Auto-filled based on ZIP Code"
+                    className="rounded-lg border-slate-200 bg-gray-50"
+                    disabled={true}
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-slate-600 mb-1 block">Country</label>
+                  <Input
+                    type="text"
+                    value={editForm.country || ''}
+                    placeholder="Auto-filled based on ZIP Code"
+                    className="rounded-lg border-slate-200 bg-gray-50"
+                    disabled={true}
+                  />
+                </div>
+              </div>
+            </div>
+
+            <DialogFooter className="gap-2 pt-2">
+              <Button
+                onClick={handleSaveEdit}
+                disabled={updateProfileMutation.isPending}
+                className="flex-1 bg-purple-600 hover:bg-purple-700 text-white rounded-xl"
+              >
+                {updateProfileMutation.isPending ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                    Saving...
+                  </>
+                ) : (
+                  <>
+                    <Save className="w-4 h-4 mr-2" />
+                    Save Changes
+                  </>
+                )}
+              </Button>
+              <Button onClick={() => setEditingProfile(null)} variant="outline" className="rounded-xl">
+                <X className="w-4 h-4 mr-1" />
+                Cancel
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog open={!!confirmDelete} onOpenChange={(open) => !open && setConfirmDelete(null)}>
+          <DialogContent className="max-w-sm">
+            <DialogHeader>
+              <DialogTitle>Delete User Account</DialogTitle>
+            </DialogHeader>
+            <p className="text-sm text-slate-600 py-2">
+              Are you sure you want to delete <strong>{confirmDelete?.display_name || 'this user'}</strong>? This will permanently remove their account and all associated data (messages, profile, subscriptions).
+            </p>
+            <DialogFooter className="gap-2">
+              <Button
+                onClick={() => confirmDelete?.user_email && deleteProfileMutation.mutate(confirmDelete)}
+                disabled={deleteProfileMutation.isPending}
+                className="flex-1 bg-red-600 hover:bg-red-700 text-white rounded-xl"
+              >
+                {deleteProfileMutation.isPending ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                    Deleting...
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="w-4 h-4 mr-2" />
+                    Delete
+                  </>
+                )}
+              </Button>
+              <Button onClick={() => setConfirmDelete(null)} variant="outline" className="rounded-xl">
+                Cancel
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </main>
     </div>
   );

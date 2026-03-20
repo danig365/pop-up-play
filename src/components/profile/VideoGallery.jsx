@@ -1,20 +1,41 @@
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Plus, X, Video, Loader2, Play, Maximize, Minimize, Pause } from 'lucide-react';
 import { base44 } from '@/api/base44Client';
 import { toast } from 'sonner';
 
-export default function VideoGallery({ videos = [], onVideosChange, editable = true }) {
+export default function VideoGallery({ videos = [], onAddVideo, onDeleteVideo, editable = true }) {
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [fullscreenVideo, setFullscreenVideo] = useState(null);
   const [videoErrors, setVideoErrors] = useState({});
   const [playingVideos, setPlayingVideos] = useState({});
+  const [viewCounted, setViewCounted] = useState({});
+  const [localVideos, setLocalVideos] = useState([]);
   const [deleteConfirm, setDeleteConfirm] = useState(null);
   const videoRefs = useRef({});
   const fullscreenVideoRef = useRef(null);
   const [pushLoading, setPushLoading] = useState(null); // index of video being pushed
   const [userEmail, setUserEmail] = useState(null);
+
+  useEffect(() => {
+    const normalizedVideos = (videos || []).map((video, index) => {
+      if (typeof video === 'string') {
+        return {
+          id: `legacy-${index}`,
+          video_url: video,
+          views: 0,
+          _legacy: true
+        };
+      }
+      return {
+        ...video,
+        views: video?.views || 0
+      };
+    });
+    setLocalVideos(normalizedVideos);
+    setViewCounted({});
+  }, [videos]);
 
   // Get user email from parent Profile page
   React.useEffect(() => {
@@ -50,13 +71,14 @@ export default function VideoGallery({ videos = [], onVideosChange, editable = t
     }
   };
 
-  const openFullscreen = (videoSrc, index) => {
+  const openFullscreen = (videoItem, index) => {
     // Pause the inline video before opening overlay
     const inlineVideo = videoRefs.current[index];
     if (inlineVideo && !inlineVideo.paused) {
       inlineVideo.pause();
     }
-    setFullscreenVideo(videoSrc);
+    setFullscreenVideo(videoItem);
+    handleIncrementView(videoItem, index);
   };
 
   const closeFullscreen = () => {
@@ -65,6 +87,27 @@ export default function VideoGallery({ videos = [], onVideosChange, editable = t
       fullscreenVideoRef.current.pause();
     }
     setFullscreenVideo(null);
+  };
+
+  const handleIncrementView = async (videoItem, index) => {
+    if (!videoItem?.id || videoItem._legacy || viewCounted[videoItem.id]) return;
+
+    try {
+      await base44.entities.ProfileVideo.update(videoItem.id, {
+        views: (videoItem.views || 0) + 1
+      });
+
+      setLocalVideos(prev => prev.map((video, i) => {
+        if (video.id === videoItem.id || i === index) {
+          return { ...video, views: (video.views || 0) + 1 };
+        }
+        return video;
+      }));
+
+      setViewCounted(prev => ({ ...prev, [videoItem.id]: true }));
+    } catch (error) {
+      // Silently fail to match reels behavior
+    }
   };
 
   const handleUpload = async (e) => {
@@ -110,7 +153,19 @@ export default function VideoGallery({ videos = [], onVideosChange, editable = t
       clearInterval(progressInterval);
       setUploadProgress(100);
       
-      onVideosChange([...videos, file_url]);
+      if (onAddVideo) {
+        await onAddVideo(file_url);
+      } else {
+        setLocalVideos(prev => [
+          ...prev,
+          {
+            id: `local-${Date.now()}`,
+            video_url: file_url,
+            views: 0,
+            _legacy: true
+          }
+        ]);
+      }
       toast.success('Video uploaded successfully');
     } catch (error) {
       console.error('Upload failed:', error);
@@ -128,10 +183,18 @@ export default function VideoGallery({ videos = [], onVideosChange, editable = t
     setDeleteConfirm(index);
   };
 
-  const confirmDelete = () => {
+  const confirmDelete = async () => {
     if (deleteConfirm !== null) {
-      const newVideos = videos.filter((_, i) => i !== deleteConfirm);
-      onVideosChange(newVideos);
+      const videoToDelete = localVideos[deleteConfirm];
+      if (videoToDelete && onDeleteVideo && !videoToDelete._legacy) {
+        try {
+          await onDeleteVideo(videoToDelete.id);
+        } catch (error) {
+          toast.error('Failed to delete video. Please try again.');
+          return;
+        }
+      }
+      setLocalVideos(prev => prev.filter((_, i) => i !== deleteConfirm));
       setDeleteConfirm(null);
     }
   };
@@ -150,9 +213,9 @@ export default function VideoGallery({ videos = [], onVideosChange, editable = t
         </div>
       )}
       <div className="space-y-4">
-        {videos.map((video, index) => (
+        {localVideos.map((videoItem, index) => (
           <motion.div
-            key={index}
+            key={videoItem.id || index}
             layout
             initial={{ opacity: 0, scale: 0.8 }}
             animate={{ opacity: 1, scale: 1 }}
@@ -179,7 +242,7 @@ export default function VideoGallery({ videos = [], onVideosChange, editable = t
                 <>
                   <video
                     ref={(el) => { videoRefs.current[index] = el; }}
-                    src={video}
+                    src={videoItem.video_url}
                     className="w-full h-full object-cover"
                     preload="metadata"
                     playsInline
@@ -187,15 +250,21 @@ export default function VideoGallery({ videos = [], onVideosChange, editable = t
                     controlsList="nodownload nofullscreen"
                     onError={(e) => handleVideoError(index, e)}
                     onLoadedData={() => handleVideoLoaded(index)}
-                    onPlay={() => setPlayingVideos(prev => ({ ...prev, [index]: true }))}
+                    onPlay={() => {
+                      setPlayingVideos(prev => ({ ...prev, [index]: true }));
+                      handleIncrementView(videoItem, index);
+                    }}
                     onPause={() => setPlayingVideos(prev => ({ ...prev, [index]: false }))}
                     onEnded={() => setPlayingVideos(prev => ({ ...prev, [index]: false }))}
                     onContextMenu={(e) => e.preventDefault()}
                     style={{ userSelect: 'none', WebkitUserDrag: 'none' }}
                   />
+                  <div className="absolute top-2 left-2 text-white text-xs bg-black/50 px-2 py-1 rounded">
+                    {videoItem.views || 0} {(videoItem.views || 0) === 1 ? 'view' : 'views'}
+                  </div>
                   {/* Fullscreen button */}
                   <button
-                    onClick={() => openFullscreen(video, index)}
+                    onClick={() => openFullscreen(videoItem, index)}
                     className="absolute bottom-2 right-2 w-8 h-8 bg-black/60 hover:bg-black/80 rounded-full flex items-center justify-center transition-all z-10 opacity-0 group-hover:opacity-100"
                     title="Fullscreen"
                   >
@@ -207,8 +276,7 @@ export default function VideoGallery({ videos = [], onVideosChange, editable = t
 
             {/* Video Info & Actions */}
             <div className="p-4">
-              <p className="text-sm text-slate-500 mb-3">0 views</p>
-              
+              {editable && (
               <div className="flex gap-2">
                 <button
                   className="flex-1 px-4 py-2 bg-violet-600 hover:bg-violet-700 text-white rounded-lg font-medium text-sm transition-colors flex items-center justify-center gap-2"
@@ -222,7 +290,7 @@ export default function VideoGallery({ videos = [], onVideosChange, editable = t
                     try {
                       await base44.entities.Reel.create({
                         user_email: userEmail,
-                        video_url: video,
+                        video_url: videoItem.video_url,
                         caption: '', // Optionally add a caption
                       });
                       toast.success('Video pushed to reels!');
@@ -246,12 +314,13 @@ export default function VideoGallery({ videos = [], onVideosChange, editable = t
                   <X className="w-4 h-4" /> Delete
                 </button>
               </div>
+              )}
             </div>
           </motion.div>
         ))}
         
         {/* Add Video Button */}
-        {editable && videos.length < 4 && (
+        {editable && localVideos.length < 4 && (
           <label className="aspect-video rounded-xl border-2 border-dashed border-rose-200 hover:border-rose-400 flex flex-col items-center justify-center cursor-pointer transition-colors bg-rose-50/50 hover:bg-rose-50">
             <input
               type="file"
@@ -304,7 +373,7 @@ export default function VideoGallery({ videos = [], onVideosChange, editable = t
             >
               <video
                 ref={fullscreenVideoRef}
-                src={fullscreenVideo}
+                src={fullscreenVideo?.video_url || fullscreenVideo}
                 className="w-full max-h-[85vh] rounded-lg object-contain"
                 controls
                 autoPlay

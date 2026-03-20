@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
-import { ArrowLeft, Save, Loader2, MessageCircle, Lock } from 'lucide-react';
+import { ArrowLeft, Save, Loader2, MessageCircle, Lock, Video } from 'lucide-react';
 import { getApiBaseUrl } from '@/lib/apiUrl';
 // @ts-ignore
 import { Button } from '@/components/ui/button';
@@ -14,7 +14,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 // @ts-ignore
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { createPageUrl } from '@/utils';
 import AvatarUpload from '@/components/profile/AvatarUpload';
 import PhotoGallery from '@/components/profile/PhotoGallery';
@@ -58,24 +58,103 @@ export default function Profile() {
     email_notifications_enabled: true
   });
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
 
   const [backUrl, setBackUrl] = useState('Home');
+
+  const resolveCountryCode = (countryValue) => {
+    const normalized = String(countryValue || '').trim().toLowerCase();
+    if (!normalized) return '';
+    const map = {
+      us: 'us',
+      usa: 'us',
+      'united states': 'us',
+      'united states of america': 'us',
+      nl: 'nl',
+      netherlands: 'nl',
+      nederland: 'nl',
+    };
+    return map[normalized] || '';
+  };
+
+  const getCountryCandidatesForPostal = (postalCode, countryValue) => {
+    const candidates = [];
+    const fromProfileCountry = resolveCountryCode(countryValue);
+    if (fromProfileCountry) candidates.push(fromProfileCountry);
+
+    if (/[a-zA-Z]/.test(postalCode)) {
+      candidates.push('nl');
+    }
+
+    candidates.push('us');
+    return [...new Set(candidates)];
+  };
+
+  const lookupWithNominatim = async (postalCode, countryHint = '') => {
+    const params = new URLSearchParams({
+      postalcode: postalCode,
+      format: 'json',
+      addressdetails: '1',
+      limit: '1',
+    });
+
+    if (countryHint) {
+      params.set('country', countryHint);
+    }
+
+    const response = await fetch(`https://nominatim.openstreetmap.org/search?${params.toString()}`);
+    if (!response.ok) return null;
+
+    const data = await response.json();
+    const address = data?.[0]?.address;
+    if (!address) return null;
+
+    const city = address.city || address.town || address.village || address.municipality || address.county || '';
+    const state = address.state || address.region || '';
+    const country = address.country || countryHint || '';
+
+    if (!city && !state && !country) return null;
+    return { city, state, country };
+  };
   
   // Function to fetch city, state, and country from zip code
   const fetchCityFromZipCode = async (zipCode) => {
-    if (!zipCode || zipCode.length < 5) return;
+    let postalCode = String(zipCode || '').trim().replace(/\s+/g, ' ');
+    if (!postalCode || postalCode.length < 4) return;
+    if (/[a-zA-Z]/.test(postalCode)) {
+      postalCode = postalCode.toUpperCase();
+    }
+
+    const countryCandidates = getCountryCandidatesForPostal(postalCode, formData.country);
+
     try {
-      // Using zippopotam.us API - free and no key required
-      const response = await fetch(`https://api.zippopotam.us/us/${zipCode}`);
-      if (response.ok) {
+      for (const countryCode of countryCandidates) {
+        const response = await fetch(`https://api.zippopotam.us/${countryCode}/${encodeURIComponent(postalCode)}`);
+        if (!response.ok) continue;
+
         const data = await response.json();
-        const city = data.places[0]?.['place name'] || '';
-        const state = data.places[0]?.['state abbreviation'] || '';
-        const country = data.country || 'United States';
+        const city = data.places?.[0]?.['place name'] || '';
+        const state = data.places?.[0]?.['state abbreviation'] || data.places?.[0]?.state || '';
+        const country = data.country || (countryCode === 'nl' ? 'Netherlands' : 'United States');
         setFormData((prev) => ({ ...prev, city, state, country }));
-      } else {
-        setFormData((prev) => ({ ...prev, city: '', state: '', country: '' }));
+        return;
       }
+
+      const countryHints = [
+        formData.country,
+        ...(countryCandidates.map((code) => (code === 'nl' ? 'Netherlands' : code === 'us' ? 'United States' : ''))),
+        '',
+      ].filter(Boolean);
+
+      for (const hint of [...new Set(countryHints)]) {
+        const resolved = await lookupWithNominatim(postalCode, hint);
+        if (resolved) {
+          setFormData((prev) => ({ ...prev, ...resolved }));
+          return;
+        }
+      }
+
+      setFormData((prev) => ({ ...prev, city: '', state: '', country: '' }));
     } catch (error) {
       console.error('Error fetching location data:', error);
       setFormData((prev) => ({ ...prev, city: '', state: '', country: '' }));
@@ -132,6 +211,17 @@ export default function Profile() {
     enabled: !!viewingUserEmail
   });
 
+  const profileVideosOwnerEmail = viewingUserEmail || user?.email;
+  const { data: profileVideos = [] } = useQuery({
+    queryKey: ['profileVideos', profileVideosOwnerEmail],
+    queryFn: async () => {
+      if (!profileVideosOwnerEmail) return [];
+      const rows = await base44.entities.ProfileVideo.filter({ user_email: profileVideosOwnerEmail });
+      return rows.sort((a, b) => new Date(b.created_date || 0) - new Date(a.created_date || 0));
+    },
+    enabled: !!profileVideosOwnerEmail
+  });
+
   const isOwnProfile = !viewingUserEmail || viewingUserEmail === user?.email;
   const displayProfile = isOwnProfile ? myProfile : viewingProfile;
 
@@ -159,7 +249,7 @@ export default function Profile() {
     } else if (user && isOwnProfile) {
       setFormData((prev) => ({
         ...prev,
-        display_name: user.full_name || ''
+        display_name: user.name || user.email?.split('@')[0] || ''
       }));
     }
   }, [displayProfile, user, isOwnProfile]);
@@ -167,10 +257,14 @@ export default function Profile() {
   const saveMutation = useMutation({
     mutationFn: async (formData) => {
       try {
+        if (!user?.email) {
+          throw new Error('Not authenticated. Please log in and try again.');
+        }
+
         // Filter data to only include fields that exist in the database
         const validFields = [
           'display_name', 'bio', 'age', 'gender', 'interested_in',
-          'interests', 'hobbies', 'looking_for', 'zip_code', 'city',
+          'interests', 'hobbies', 'looking_for', 'zip_code', 'city', 'state', 'country',
           'avatar_url', 'photos', 'videos', 'location', 'email_notifications_enabled'
         ];
         
@@ -248,11 +342,14 @@ export default function Profile() {
         throw new Error('Passwords do not match');
       }
 
+      const token = localStorage.getItem('popup_auth_token');
       const response = await fetch(`${getApiBaseUrl()}/auth/change-password`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
         body: JSON.stringify({
-          email: user.email,
           currentPassword,
           newPassword
         })
@@ -339,10 +436,10 @@ export default function Profile() {
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogAction onClick={() => setShowDeleteDialog(false)}>
+            <AlertDialogAction onClick={() => setShowDeleteDialog(false)} className="bg-slate-300 hover:bg-slate-400 text-white">
               No
             </AlertDialogAction>
-            <AlertDialogAction onClick={handleDeleteAccount} className="bg-red-600 hover:bg-red-700">
+            <AlertDialogAction onClick={handleDeleteAccount} className="bg-red-600 hover:bg-red-700 text-white">
               Yes
             </AlertDialogAction>
           </AlertDialogFooter>
@@ -393,13 +490,13 @@ export default function Profile() {
           <AlertDialogFooter>
             <AlertDialogAction 
               onClick={() => setShowChangePasswordDialog(false)}
-              className="bg-slate-300 hover:bg-slate-400">
+              className="bg-slate-300 hover:bg-slate-400 text-white">
               Cancel
             </AlertDialogAction>
             <AlertDialogAction 
               onClick={handleChangePassword}
               disabled={changePasswordMutation.isPending}
-              className="bg-violet-600 hover:bg-violet-700">
+              className="bg-violet-600 hover:bg-violet-700 text-white">
               {changePasswordMutation.isPending ? (
                 <>
                   <Loader2 className="w-4 h-4 mr-2 animate-spin" />
@@ -471,12 +568,20 @@ export default function Profile() {
                   style={{ pointerEvents: 'none', userSelect: 'none' }}
                 />
               </div>
-              <Link to={createPageUrl('Chat') + `?user=${viewingUserEmail}&from=profile&backTo=${backUrl}`}>
-                <Button className="bg-violet-600 hover:bg-violet-700 text-white gap-2">
-                  <MessageCircle className="w-4 h-4" />
-                  Message
+              <div className="flex items-center gap-2">
+                <Button 
+                  onClick={() => navigate(createPageUrl('VideoCall') + '?user=' + viewingUserEmail)}
+                  className="bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white gap-2">
+                  <Video className="w-4 h-4" />
+                  Video Verify
                 </Button>
-              </Link>
+                <Link to={createPageUrl('Chat') + `?user=${viewingUserEmail}&from=profile&backTo=${backUrl}`}>
+                  <Button className="bg-violet-600 hover:bg-violet-700 text-white gap-2">
+                    <MessageCircle className="w-4 h-4" />
+                    Message
+                  </Button>
+                </Link>
+              </div>
             </div>
           )}
         </motion.div>
@@ -749,8 +854,25 @@ export default function Profile() {
             
             <TabsContent value="videos">
               <VideoGallery
-                videos={formData.videos}
-                onVideosChange={(videos) => setFormData((prev) => ({ ...prev, videos }))}
+                videos={profileVideos}
+                onAddVideo={async (videoUrl) => {
+                  if (!user?.email) {
+                    toast.error('Not authenticated. Please log in and try again.');
+                    return;
+                  }
+                  await base44.entities.ProfileVideo.create({
+                    user_email: user.email,
+                    video_url: videoUrl,
+                    views: 0
+                  });
+                  await queryClient.invalidateQueries({ queryKey: ['profileVideos', user.email] });
+                }}
+                onDeleteVideo={async (videoId) => {
+                  await base44.entities.ProfileVideo.delete(videoId);
+                  if (profileVideosOwnerEmail) {
+                    await queryClient.invalidateQueries({ queryKey: ['profileVideos', profileVideosOwnerEmail] });
+                  }
+                }}
                 editable={isOwnProfile} />
 
             </TabsContent>

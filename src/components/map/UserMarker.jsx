@@ -2,18 +2,18 @@ import React, { useState, useRef } from 'react';
 import { Marker, Popup } from 'react-leaflet';
 import L from 'leaflet';
 import { motion, AnimatePresence } from 'framer-motion';
-import { MessageCircle, Video } from 'lucide-react';
+import { MessageCircle, Video, X } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { createPageUrl } from '@/utils';
 import { useSubscription } from '@/lib/SubscriptionContext';
 
-export default function UserMarker({ profile, isCurrentUser, onProfileClick }) {
+export default function UserMarker({ profile, isCurrentUser, onProfileClick, unreadFromUser = 0 }) {
   const [isHovered, setIsHovered] = useState(false);
   const [popupHovered, setPopupHovered] = useState(false);
   const markerRef = useRef(null);
   const closeTimeoutRef = useRef(null);
   const navigate = useNavigate();
-  const { guardAction } = useSubscription();
+  const { guardAction, hasAccess } = useSubscription();
 
   const handleChatClick = (e) => {
     e.stopPropagation();
@@ -57,8 +57,11 @@ export default function UserMarker({ profile, isCurrentUser, onProfileClick }) {
       ref={markerRef}
       eventHandlers={{
         mouseover: (e) => {
-          if (!isCurrentUser) {
+          if (!isCurrentUser && !hasAccess) {
+            // Non-paid user: show paywall, don't open the popup
+            e.target.closePopup();
             guardAction('view profile details');
+            return;
           }
           if (closeTimeoutRef.current) {
             clearTimeout(closeTimeoutRef.current);
@@ -75,6 +78,12 @@ export default function UserMarker({ profile, isCurrentUser, onProfileClick }) {
           }, 200);
         },
         click: (e) => {
+          if (!isCurrentUser && !hasAccess) {
+            // Non-paid user: show paywall, don't open the popup
+            e.target.closePopup();
+            guardAction('view profile details');
+            return;
+          }
           e.target.openPopup();
         },
         dblclick: () => {
@@ -83,8 +92,10 @@ export default function UserMarker({ profile, isCurrentUser, onProfileClick }) {
       }}
     >
       <Popup className="custom-popup leaflet-popup" closeButton={false}>
+        {/* Only show popup content for paid users or current user */}
+        {(isCurrentUser || hasAccess) ? (
         <div 
-          className="p-3 min-w-[220px] bg-white rounded-xl"
+          className="p-3 min-w-[220px] bg-white rounded-xl relative"
           onMouseEnter={() => {
             if (closeTimeoutRef.current) {
               clearTimeout(closeTimeoutRef.current);
@@ -100,6 +111,19 @@ export default function UserMarker({ profile, isCurrentUser, onProfileClick }) {
             }, 200);
           }}
         >
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              setPopupHovered(false);
+              if (markerRef.current) {
+                markerRef.current.closePopup();
+              }
+            }}
+            className="absolute top-1 right-1 w-6 h-6 flex items-center justify-center rounded-full text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors z-10"
+            title="Close"
+          >
+            <X className="w-4 h-4" />
+          </button>
           <div className="flex items-center gap-2 mb-2">
             <img 
               src={profile.avatar_url || `data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect fill='%23ddd6fe' width='100' height='100'/%3E%3Ccircle cx='50' cy='38' r='18' fill='%23a78bfa'/%3E%3Cellipse cx='50' cy='80' rx='28' ry='22' fill='%23a78bfa'/%3E%3C/svg%3E`} 
@@ -110,7 +134,29 @@ export default function UserMarker({ profile, isCurrentUser, onProfileClick }) {
               style={{ pointerEvents: 'none', userSelect: 'none', WebkitUserDrag: 'none' }}
             />
             <div>
-              <h3 className="font-semibold text-sm text-slate-800">{profile.display_name || 'Anonymous'}</h3>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  navigate(createPageUrl('Profile') + '?user=' + profile.user_email);
+                }}
+                style={{ 
+                  cursor: 'pointer', 
+                  color: '#6d28d9', 
+                  fontWeight: 600, 
+                  fontSize: '0.875rem', 
+                  background: 'none', 
+                  border: 'none', 
+                  padding: 0, 
+                  textAlign: 'left',
+                  textDecoration: 'none',
+                  pointerEvents: 'auto'
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.textDecoration = 'underline'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.textDecoration = 'none'; }}
+                title="View profile"
+              >
+                {profile.display_name || 'Anonymous'}
+              </button>
               {profile.age && <p className="text-xs text-slate-500">{profile.age} years old</p>}
             </div>
           </div>
@@ -132,14 +178,24 @@ export default function UserMarker({ profile, isCurrentUser, onProfileClick }) {
                 </button>
                 <button
                   onClick={handleChatClick}
-                  className="bg-gradient-to-r from-violet-600 to-purple-600 hover:from-violet-700 hover:to-purple-700 text-white rounded-lg p-1.5 shadow-lg transition-all hover:scale-110"
+                  className="bg-gradient-to-r from-violet-600 to-purple-600 hover:from-violet-700 hover:to-purple-700 text-white rounded-lg p-1.5 shadow-lg transition-all hover:scale-110 relative"
                 >
                   <MessageCircle className="w-3.5 h-3.5" />
+                  {unreadFromUser > 0 && (
+                    <span className="absolute -top-1.5 -right-1.5 min-w-[16px] h-[16px] flex items-center justify-center rounded-full bg-red-500 text-white text-[9px] font-bold px-0.5 leading-none shadow">
+                      {unreadFromUser > 99 ? '99+' : unreadFromUser}
+                    </span>
+                  )}
                 </button>
               </div>
             )}
           </div>
         </div>
+        ) : (
+          <div className="p-3 min-w-[180px] bg-white rounded-xl text-center">
+            <p className="text-sm text-slate-500 font-medium">Subscribe to view profiles</p>
+          </div>
+        )}
       </Popup>
     </Marker>
   );

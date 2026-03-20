@@ -28,6 +28,7 @@ export default function SessionManager() {
   const isCheckingRef = useRef(false);
   const [showDialog, setShowDialog] = useState(false);
   const otherSessionsRef = useRef([]);
+  const dismissedRef = useRef(false); // Track if user already responded to the prompt
 
   useEffect(() => {
     let mounted = true;
@@ -97,7 +98,7 @@ export default function SessionManager() {
           // Find the most recent session (excluding current device)
           const otherSessions = activeSessions.filter(s => s.device_id !== deviceId);
           
-          if (otherSessions.length > 0) {
+          if (otherSessions.length > 0 && !dismissedRef.current) {
             // Sort by last_active to find the most recent other session
             const sortedOtherSessions = otherSessions.sort(
               (a, b) => new Date(b.last_active) - new Date(a.last_active)
@@ -150,6 +151,7 @@ export default function SessionManager() {
       
       toast.success('Other devices have been logged out');
       setShowDialog(false);
+      dismissedRef.current = true;
     } catch (error) {
       toast.error('Failed to logout other devices');
     }
@@ -157,7 +159,7 @@ export default function SessionManager() {
 
   const handleKeepBothSessions = () => {
     setShowDialog(false);
-    // Do nothing - allow both sessions to remain active
+    dismissedRef.current = true;
   };
 
   return (

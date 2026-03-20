@@ -14,10 +14,11 @@ services:
     ports:
       - "5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-popupapp}"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-popupapp} -d ${DB_NAME:-popup_play_db}"]
       interval: 10s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
 
   app:
     build: .
@@ -32,7 +33,6 @@ services:
         condition: service_healthy
     restart: unless-stopped
     volumes:
-      - ./src:/app/src
       - uploads_data:/app/uploads
 
 volumes:

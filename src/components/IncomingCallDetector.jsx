@@ -11,8 +11,31 @@ export default function IncomingCallDetector({ user }) {
   const [isOpen, setIsOpen] = useState(false);
   const [handledCallIds, setHandledCallIds] = useState(new Set());
   const acceptedCallIdRef = useRef(null); // Track which call was accepted to prevent signal deletion
+  const ringAudioRef = useRef(null);
   const navigate = useNavigate();
   const userEmail = user?.email;
+
+  // Create ring audio on mount
+  useEffect(() => {
+    const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3');
+    audio.loop = true;
+    audio.volume = 1.0;
+    ringAudioRef.current = audio;
+    return () => {
+      audio.pause();
+      audio.src = '';
+    };
+  }, []);
+
+  // Play/stop ring based on dialog open state
+  useEffect(() => {
+    if (isOpen && ringAudioRef.current) {
+      ringAudioRef.current.play().catch(() => {});
+    } else if (ringAudioRef.current) {
+      ringAudioRef.current.pause();
+      ringAudioRef.current.currentTime = 0;
+    }
+  }, [isOpen]);
 
   console.log('[IncomingCallDetector] Rendering with userEmail:', userEmail);
 
@@ -50,8 +73,22 @@ export default function IncomingCallDetector({ user }) {
     
     // Only show notification if there are new unhandled signals
     if (incomingSignals.length > 0 && !incomingCall) {
-      // Get the most recent call that hasn't been handled yet
-      const unhandledCalls = incomingSignals.filter(call => !handledCallIds.has(call.id));
+      const now = Date.now();
+      const MAX_SIGNAL_AGE_MS = 60000; // 60 seconds - ignore stale offers
+
+      // Get the most recent call that hasn't been handled yet and isn't stale
+      const unhandledCalls = incomingSignals.filter(call => {
+        if (handledCallIds.has(call.id)) return false;
+        // Ignore stale signals older than 60 seconds to prevent ghost notifications
+        const signalAge = now - new Date(call.created_date).getTime();
+        if (signalAge > MAX_SIGNAL_AGE_MS) {
+          console.log(`   🗑️ Ignoring stale signal (${Math.round(signalAge / 1000)}s old):`, call.id.substring(0, 8));
+          // Clean up the stale signal from DB
+          base44.entities.VideoSignal.delete(call.id).catch(() => {});
+          return false;
+        }
+        return true;
+      });
       
       console.log(`   Total signals: ${incomingSignals.length}, Unhandled: ${unhandledCalls.length}, Handled: ${handledCallIds.size}`);
       
@@ -71,16 +108,36 @@ export default function IncomingCallDetector({ user }) {
   const handleAcceptCall = async () => {
     if (incomingCall) {
       console.log('✅ [IncomingCallDetector] ACCEPT button clicked');
+      // Stop ring sound
+      if (ringAudioRef.current) {
+        ringAudioRef.current.pause();
+        ringAudioRef.current.currentTime = 0;
+      }
       console.log('   From:', incomingCall.from_email);
       console.log('   Call ID:', incomingCall.call_id);
       console.log('   Navigating to VideoCall page...');
+
+      // Save the offer SDP data before deleting the signal
+      const offerSignalData = incomingCall.signal_data;
+
       // Mark call as accepted so handleDialogOpenChange knows NOT to delete the signal
       acceptedCallIdRef.current = incomingCall.id;
       // Mark this call as handled to prevent re-showing
       setHandledCallIds(prev => new Set([...prev, incomingCall.id]));
+
+      // Delete the offer signal from DB immediately to prevent stale ghost notifications
+      try {
+        await base44.entities.VideoSignal.delete(incomingCall.id);
+        console.log('   ✅ Offer signal deleted from DB');
+      } catch (err) {
+        console.log('   ⚠️ Could not delete offer signal:', err.message);
+      }
+
       setIsOpen(false);
-      // Navigate to video call page with the caller's email AND the callId to maintain signal matching
-      navigate(`/VideoCall?user=${incomingCall.from_email}&callId=${incomingCall.call_id}&isReceiver=true`);
+      // Navigate to video call page, passing offer SDP via location state
+      navigate(`/VideoCall?user=${incomingCall.from_email}&callId=${incomingCall.call_id}&isReceiver=true`, {
+        state: { offerSignalData }
+      });
     }
   };
 
@@ -88,6 +145,11 @@ export default function IncomingCallDetector({ user }) {
     if (incomingCall) {
       try {
         console.log('❌ [IncomingCallDetector] DECLINE button clicked');
+        // Stop ring sound
+        if (ringAudioRef.current) {
+          ringAudioRef.current.pause();
+          ringAudioRef.current.currentTime = 0;
+        }
         console.log('   From:', incomingCall.from_email);
         console.log('   Call ID:', incomingCall.call_id);
         console.log('   Signal ID:', incomingCall.id.substring(0, 8));
@@ -124,6 +186,11 @@ export default function IncomingCallDetector({ user }) {
   const handleDialogOpenChange = async (open) => {
     if (!open && incomingCall) {
       console.log('🔔 [IncomingCallDetector] Dialog closed');
+      // Stop ring sound
+      if (ringAudioRef.current) {
+        ringAudioRef.current.pause();
+        ringAudioRef.current.currentTime = 0;
+      }
       console.log('   Call from:', incomingCall.from_email);
       console.log('   Note: Signal will be deleted only if user explicitly declined');
       // Clear the accepted ref
@@ -145,17 +212,17 @@ export default function IncomingCallDetector({ user }) {
         <AlertDialogDescription className="text-slate-300 text-base">
           {incomingCall.from_email} is calling you. Do you want to accept?
         </AlertDialogDescription>
-        <div className="flex gap-3 justify-end mt-6">
+        <div className="flex gap-4 justify-center mt-6">
           <AlertDialogCancel 
             onClick={handleDeclineCall}
-            className="bg-red-600 hover:bg-red-700 text-white border-0 flex items-center gap-2"
+            className="bg-red-600 hover:bg-red-700 text-white border-0 flex items-center justify-center gap-2 px-6 py-2 m-0"
           >
             <PhoneOff className="w-4 h-4" />
             Decline
           </AlertDialogCancel>
           <AlertDialogAction 
             onClick={handleAcceptCall}
-            className="bg-green-600 hover:bg-green-700 text-white flex items-center gap-2"
+            className="bg-green-600 hover:bg-green-700 text-white flex items-center justify-center gap-2 px-6 py-2"
           >
             <Phone className="w-4 h-4" />
             Accept

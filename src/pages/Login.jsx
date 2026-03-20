@@ -89,17 +89,23 @@ export default function Login() {
         throw new Error(errorData.error || 'Google authentication failed');
       }
 
-      const user = await response.json();
-      console.log('[DEBUG GoogleAuth] ✅ Google auth successful:', user.email);
+      const data = await response.json();
+      const { token, ...user } = data;
+      console.log('[GoogleAuth] Google auth successful:', user.email);
       
-      // Save user to localStorage
-      localStorage.setItem('mock_auth_user', JSON.stringify(user));
+      // Save user and JWT token via the auth module
+      base44.auth.saveAuth(user, token);
       
       await new Promise(resolve => setTimeout(resolve, 200));
       await checkUserAuth();
       
-      console.log('[DEBUG GoogleAuth] 🔄 Navigating to Home...');
-      navigate(createPageUrl('Home'));
+      if (user.is_new_user) {
+        console.log('[DEBUG GoogleAuth] 🔄 New user — navigating to Profile...');
+        navigate(createPageUrl('Profile'));
+      } else {
+        console.log('[DEBUG GoogleAuth] 🔄 Existing user — navigating to Home...');
+        navigate(createPageUrl('Home'));
+      }
     } catch (err) {
       console.error('[DEBUG GoogleAuth] ❌ Google auth error:', err);
       setError(err.message || 'Google authentication failed. Please try again.');
@@ -127,39 +133,30 @@ export default function Login() {
       return;
     }
 
-    if (password.length < 6) {
-      setError('Password must be at least 6 characters');
+    if (password.length < 8) {
+      setError('Password must be at least 8 characters');
       return;
     }
 
     setIsLoading(true);
     try {
-      console.log('[DEBUG Login] 📝 handleLogin started');
-      console.log('[DEBUG Login] Email:', email);
-      
-      // Login with email and password
-      console.log('[DEBUG Login] Calling base44.auth.login()...');
       const user = await base44.auth.login(email, password);
-      console.log('[DEBUG Login] ✅ base44.auth.login() returned:', user.email);
-      
-      // Check what's in localStorage
-      const savedUser = localStorage.getItem('mock_auth_user');
-      console.log('[DEBUG Login] localStorage mock_auth_user:', savedUser ? JSON.parse(savedUser).email : 'NOT FOUND');
       
       // Small delay to ensure localStorage is updated
-      console.log('[DEBUG Login] Waiting 200ms...');
       await new Promise(resolve => setTimeout(resolve, 200));
       
-      // ⭐ CRITICAL: Call checkUserAuth to update AuthContext state
-      console.log('[DEBUG Login] Calling checkUserAuth() to update AuthContext...');
+      // Update AuthContext state
       await checkUserAuth();
-      console.log('[DEBUG Login] ✅ checkUserAuth() complete - AuthContext updated');
       
-      // Now navigate - AuthContext should have isAuthenticated=true
-      console.log('[DEBUG Login] 🔄 Navigating to Home...');
+      // Navigate to Home
       navigate(createPageUrl('Home'));
     } catch (err) {
-      console.error('[DEBUG Login] ❌ Login error:', err);
+      console.error('[Login] Login error:', err);
+      if (err.email_not_verified) {
+        // Redirect to OTP verification page
+        navigate(createPageUrl('VerifyOtp'), { state: { email: err.email || email } });
+        return;
+      }
       setError(err.message || 'Login failed. Please check your credentials.');
     } finally {
       setIsLoading(false);

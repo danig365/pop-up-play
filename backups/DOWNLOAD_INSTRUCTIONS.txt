@@ -1,0 +1,208 @@
+╔══════════════════════════════════════════════════════════════════════════╗
+║        POP-UP-PLAY COMPLETE BACKUP - DOWNLOAD INSTRUCTIONS              ║
+║                                                                          ║
+║  Backup File: popup_play_complete_backup_20260317_104606.tar.gz         ║
+║  Size: 34 MB                                                             ║
+║  Location: /root/pop-up-play/backups/                                   ║
+║  Date: March 17, 2026 at 10:46 UTC                                      ║
+╚══════════════════════════════════════════════════════════════════════════╝
+
+CONTENTS OF BACKUP ARCHIVE:
+════════════════════════════════════════════════════════════════════════════
+
+✓ Database Backups (3 files)
+  • popup_play_db_20260317_104153.sql (69 KB) - SQL format
+  • popup_play_db_20260317_104225.dump (46 KB) - Custom format
+  • schema_backup_20260317_104245.sql (7.5 KB) - Schema only
+  • seed_backup_20260317_104245.sql (3.2 KB) - Initial data
+
+✓ Code Backups (2 files)
+  • popup_play_code_20260317_104207.tar.gz (23 MB) - Source code
+  • popup_play_code_20260317_104215.tar.gz (12 MB) - Source code (recommended)
+
+✓ Docker Documentation (5 files)
+  • DOCKER_ANALYSIS_20260317_104304.md - Architecture analysis
+  • DOCKER_COMPREHENSIVE_REPORT.txt - Detailed infrastructure report
+  • BACKUP_INVENTORY.txt - Complete backup inventory
+  • docker_postgres_inspection_20260317_104231.json - DB container config
+  • docker_app_inspection_20260317_104239.json - App container config
+  • docker_volumes_20260317_104239.txt - Volumes and networks
+  • verify_backups.sh - Backup verification script
+
+
+DOWNLOAD METHODS (RUN FROM YOUR LOCAL MACHINE)
+════════════════════════════════════════════════════════════════════════════
+
+Replace:
+  <SERVER_IP>    = Your server IP or hostname (e.g., 192.168.1.100)
+  <SSH_USER>     = SSH username (e.g., root)
+  <SSH_PORT>     = SSH port (default: 22)
+
+──────────────────────────────────────────────────────────────────────────
+
+METHOD 1: SCP (Secure Copy) - RECOMMENDED
+──────────────────────────────────────────────────────────────────────────
+
+Basic SCP command:
+  scp <SSH_USER>@<SERVER_IP>:/root/pop-up-play/backups/popup_play_complete_backup_20260317_104606.tar.gz .
+
+If using custom SSH port:
+  scp -P <SSH_PORT> <SSH_USER>@<SERVER_IP>:/root/pop-up-play/backups/popup_play_complete_backup_20260317_104606.tar.gz .
+
+Example (assuming root@192.168.1.100, port 22):
+  scp root@192.168.1.100:/root/pop-up-play/backups/popup_play_complete_backup_20260317_104606.tar.gz .
+
+Example with custom port 2222:
+  scp -P 2222 root@192.168.1.100:/root/pop-up-play/backups/popup_play_complete_backup_20260317_104606.tar.gz .
+
+
+METHOD 2: RSYNC (Better for large files with resume capability)
+──────────────────────────────────────────────────────────────────────────
+
+Basic rsync command:
+  rsync -avz <SSH_USER>@<SERVER_IP>:/root/pop-up-play/backups/popup_play_complete_backup_20260317_104606.tar.gz .
+
+With progress and partial file resume:
+  rsync -avz --progress <SSH_USER>@<SERVER_IP>:/root/pop-up-play/backups/popup_play_complete_backup_20260317_104606.tar.gz .
+
+With custom port:
+  rsync -avz -e "ssh -p <SSH_PORT>" <SSH_USER>@<SERVER_IP>:/root/pop-up-play/backups/popup_play_complete_backup_20260317_104606.tar.gz .
+
+Example:
+  rsync -avz --progress root@192.168.1.100:/root/pop-up-play/backups/popup_play_complete_backup_20260317_104606.tar.gz .
+
+
+METHOD 3: SFTP (SSH File Transfer Protocol)
+──────────────────────────────────────────────────────────────────────────
+
+Interactive SFTP session:
+  sftp <SSH_USER>@<SERVER_IP>
+
+Then type these commands:
+  cd /root/pop-up-play/backups
+  get popup_play_complete_backup_20260317_104606.tar.gz
+  bye
+
+Example:
+  sftp root@192.168.1.100
+  sftp> cd /root/pop-up-play/backups
+  sftp> get popup_play_complete_backup_20260317_104606.tar.gz
+  sftp> bye
+
+
+METHOD 4: SSH TUNNEL + TAR (For automatic download with verification)
+──────────────────────────────────────────────────────────────────────────
+
+Download and verify in one command:
+  ssh <SSH_USER>@<SERVER_IP> "cd /root/pop-up-play/backups && tar -tzf popup_play_complete_backup_20260317_104606.tar.gz | head" && \
+  scp <SSH_USER>@<SERVER_IP>:/root/pop-up-play/backups/popup_play_complete_backup_20260317_104606.tar.gz .
+
+Example:
+  ssh root@192.168.1.100 "cd /root/pop-up-play/backups && tar -tzf popup_play_complete_backup_20260317_104606.tar.gz | head" && \
+  scp root@192.168.1.100:/root/pop-up-play/backups/popup_play_complete_backup_20260317_104606.tar.gz .
+
+
+METHOD 5: WGET/CURL via HTTP (if web server is exposed)
+──────────────────────────────────────────────────────────────────────────
+
+Option 1: Using wget
+  wget http://<SERVER_IP>:8080/backups/popup_play_complete_backup_20260317_104606.tar.gz
+
+Option 2: Using curl
+  curl -O http://<SERVER_IP>:8080/backups/popup_play_complete_backup_20260317_104606.tar.gz
+
+Note: Requires web server configured to serve /root/pop-up-play/backups/
+
+
+QUICK COPY-PASTE COMMANDS
+════════════════════════════════════════════════════════════════════════════
+
+For Linux/Mac users (SCP):
+──────────────────────────────────────────────────────────────────────────
+scp root@<SERVER_IP>:/root/pop-up-play/backups/popup_play_complete_backup_20260317_104606.tar.gz .
+
+
+For Windows users (PowerShell with scp installed):
+──────────────────────────────────────────────────────────────────────────
+scp.exe root@<SERVER_IP>C:/Users/%USERNAME%/Downloads/popup_play_complete_backup_20260317_104606.tar.gz
+
+Or use WinSCP GUI: 
+  https://winscp.net (graphical SFTP/SCP client)
+
+
+AFTER DOWNLOADING: EXTRACT AND RESTORE
+════════════════════════════════════════════════════════════════════════════
+
+1. Extract the backup archive:
+   tar -xzf popup_play_complete_backup_20260317_104606.tar.gz
+
+2. Review the contents:
+   ls -la
+
+3. For detailed restoration instructions, see:
+   cat BACKUP_INVENTORY.txt
+   cat DOCKER_COMPREHENSIVE_REPORT.txt
+
+4. To restore the database:
+   docker exec -i <container> psql -U popupapp popup_play_db < popup_play_db_20260317_104153.sql
+
+5. To restore the code:
+   tar -xzf popup_play_code_20260317_104215.tar.gz
+   cd popup_play
+   npm install
+   npm run build
+   docker-compose up -d
+
+
+VERIFICATION AFTER DOWNLOAD
+════════════════════════════════════════════════════════════════════════════
+
+Verify file integrity:
+  # Check file size
+  ls -lh popup_play_complete_backup_20260317_104606.tar.gz
+  
+  # Test archive integrity
+  tar -tzf popup_play_complete_backup_20260317_104606.tar.gz > /dev/null && \
+  echo "✓ Archive is valid" || echo "✗ Archive is corrupted"
+  
+  # List contents
+  tar -tzf popup_play_complete_backup_20260317_104606.tar.gz | head -20
+
+
+TROUBLESHOOTING
+════════════════════════════════════════════════════════════════════════════
+
+Problem: "Permission denied" from SSH
+  Solution: Check SSH key permissions
+    chmod 600 ~/.ssh/id_rsa
+    chmod 700 ~/.ssh
+
+Problem: "Connection refused" on port 22
+  Solution: SSH service not running or different port
+    Use correct <SSH_PORT> if not default 22
+
+Problem: File transfer is slow
+  Solution: Use rsync instead with compression
+    rsync -avz --progress root@<SERVER_IP>:/root/pop-up-play/backups/popup_play_complete_backup_20260317_104606.tar.gz .
+
+Problem: "File not found" error
+  Solution: Verify filename matches exactly
+    ssh root@<SERVER_IP> ls -lh /root/pop-up-play/backups/popup_play_complete_backup_*.tar.gz
+
+
+RECOMMENDED APPROACH
+════════════════════════════════════════════════════════════════════════════
+
+For most users: Use SCP
+  $ scp root@<SERVER_IP>:/root/pop-up-play/backups/popup_play_complete_backup_20260317_104606.tar.gz .
+
+For large files or resume: Use rsync
+  $ rsync -avz --progress root@<SERVER_IP>:/root/pop-up-play/backups/popup_play_complete_backup_20260317_104606.tar.gz .
+
+For GUI users: Use WinSCP (Windows) or Cyberduck (Mac)
+
+
+═══════════════════════════════════════════════════════════════════════════
+Generated: March 17, 2026
+For questions, see: DOCKER_COMPREHENSIVE_REPORT.txt
+═══════════════════════════════════════════════════════════════════════════

@@ -21,7 +21,8 @@ export default function ChatList({
   selectedUserEmail,
   onSelectConversation,
   currentUserEmail,
-  onDeleteConversation
+  onDeleteConversation,
+  isLoading = false
 }) {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [conversationToDelete, setConversationToDelete] = useState(null);
@@ -65,6 +66,17 @@ export default function ChatList({
       setConversationToDelete(null);
     }
   };
+
+  if (isLoading) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full p-8 text-center">
+        <div className="w-16 h-16 rounded-full bg-violet-100 flex items-center justify-center mb-4 animate-pulse">
+          <MessageCircle className="w-8 h-8 text-violet-400" />
+        </div>
+        <p className="text-sm text-slate-500">Loading conversations...</p>
+      </div>
+    );
+  }
 
   if (conversations.length === 0) {
     return (
@@ -147,7 +159,7 @@ export default function ChatList({
               variant="ghost"
               size="icon"
               onClick={(e) => handleDeleteClick(e, conversation)}
-              className="absolute right-2 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity text-slate-400 hover:text-red-600"
+              className="absolute right-2 top-1/2 -translate-y-1/2 opacity-70 md:opacity-0 md:group-hover:opacity-100 transition-opacity text-slate-400 hover:text-red-600"
             >
               <Trash2 className="w-4 h-4" />
             </Button>

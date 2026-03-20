@@ -39,25 +39,18 @@ export const AuthProvider = ({ children }) => {
 
   const checkUserAuth = async () => {
     try {
-      console.log('[DEBUG AuthContext.checkUserAuth] 🔄 Starting checkUserAuth...');
       const currentUser = await base44.auth.me();
-      console.log('[DEBUG AuthContext.checkUserAuth] Got user:', currentUser?.email || 'NULL');
       
       if (currentUser) {
-        console.log('[DEBUG AuthContext.checkUserAuth] ✅ User authenticated:', currentUser.email);
         setUser(currentUser);
         setIsAuthenticated(true);
-        console.log('[DEBUG AuthContext.checkUserAuth] State updated - isAuthenticated=true');
       } else {
-        console.log('[DEBUG AuthContext.checkUserAuth] ⚠️ No user found, setting isAuthenticated to false');
         setUser(null);
         setIsAuthenticated(false);
-        console.log('[DEBUG AuthContext.checkUserAuth] State updated - isAuthenticated=false');
       }
       setIsLoadingAuth(false);
-      console.log('[DEBUG AuthContext.checkUserAuth] ✅ checkUserAuth complete');
     } catch (error) {
-      console.error('[DEBUG AuthContext.checkUserAuth] ❌ Auth check error:', error);
+      console.error('[AuthContext] Auth check error:', error);
       setUser(null);
       setIsAuthenticated(false);
       setIsLoadingAuth(false);

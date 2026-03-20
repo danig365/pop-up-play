@@ -39,22 +39,38 @@ export default function ReelViewer({ reel, profile, isActive, blocked = false, o
   }, [reel?.id]);
 
   useEffect(() => {
-    if (!videoRef.current) return;
+    const video = videoRef.current;
+    if (!video) return;
 
     if (blocked) {
-      videoRef.current.pause();
+      video.pause();
       setIsPlaying(false);
       return;
     }
 
     if (isActive) {
-      videoRef.current.play().catch(() => {});
-      setIsPlaying(true);
+      // Reset to start when swiping to a new reel
+      video.currentTime = 0;
+
+      // Attempt autoplay – browsers require muted for autoplay without user gesture
+      const playPromise = video.play();
+      if (playPromise !== undefined) {
+        playPromise
+          .then(() => {
+            setIsPlaying(true);
+          })
+          .catch(() => {
+            // Autoplay blocked – force mute and retry
+            video.muted = true;
+            video.play().then(() => setIsPlaying(true)).catch(() => {});
+          });
+      }
     } else {
-      videoRef.current.pause();
+      video.pause();
+      video.currentTime = 0;
       setIsPlaying(false);
     }
-  }, [isActive, blocked]);
+  }, [isActive, blocked, reel?.id]);
 
   useEffect(() => {
     if (videoRef.current) {

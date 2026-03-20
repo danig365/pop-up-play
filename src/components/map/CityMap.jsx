@@ -16,7 +16,7 @@ function MapController({ center }) {
   return null;
 }
 
-export default function CityMap({ activeUsers, currentUserProfile, userLocation, onProfileClick }) {
+export default function CityMap({ activeUsers, currentUserProfile, userLocation, unreadMessages = [], onProfileClick }) {
   const [mapCenter, setMapCenter] = useState([40.7128, -74.0060]); // Default NYC
   
   useEffect(() => {
@@ -56,6 +56,7 @@ export default function CityMap({ activeUsers, currentUserProfile, userLocation,
             profile={profile}
             isCurrentUser={currentUserProfile?.id === profile.id}
             onProfileClick={onProfileClick}
+            unreadFromUser={unreadMessages.filter(m => m.sender_email === profile.user_email).length}
           />
         ))}
       </MapContainer>

@@ -14,10 +14,50 @@ const getAPIUrl = () => {
 
 const API_BASE_URL = getAPIUrl();
 
+// ============ Unified Auth Storage Keys ============
+const AUTH_USER_KEY = 'popup_auth_user';
+const AUTH_TOKEN_KEY = 'popup_auth_token';
+
+// Migration: move old keys to new keys on first load
+(function migrateOldAuthKeys() {
+  if (typeof window === 'undefined') return;
+  const oldUserKeys = ['mock_auth_user', 'auth_user'];
+  const oldTokenKeys = ['mock_auth_token', 'auth_token'];
+
+  if (!localStorage.getItem(AUTH_USER_KEY)) {
+    for (const key of oldUserKeys) {
+      const val = localStorage.getItem(key);
+      if (val) {
+        localStorage.setItem(AUTH_USER_KEY, val);
+        break;
+      }
+    }
+  }
+  if (!localStorage.getItem(AUTH_TOKEN_KEY)) {
+    for (const key of oldTokenKeys) {
+      const val = localStorage.getItem(key);
+      if (val) {
+        localStorage.setItem(AUTH_TOKEN_KEY, val);
+        break;
+      }
+    }
+  }
+  // Clean up old keys
+  for (const key of [...oldUserKeys, ...oldTokenKeys]) {
+    localStorage.removeItem(key);
+  }
+})();
+
+// Get current auth token
+function getAuthToken() {
+  if (typeof window === 'undefined') return null;
+  return localStorage.getItem(AUTH_TOKEN_KEY);
+}
+
 // Get current user email from session
 function getCurrentUserEmail() {
   if (typeof window === 'undefined') return null;
-  const stored = localStorage.getItem('mock_auth_user');
+  const stored = localStorage.getItem(AUTH_USER_KEY);
   if (stored) {
     try {
       const user = JSON.parse(stored);
@@ -29,6 +69,21 @@ function getCurrentUserEmail() {
   return null;
 }
 
+// Build auth headers for API requests
+function getAuthHeaders(extraHeaders = {}) {
+  const headers = { ...extraHeaders };
+  const token = getAuthToken();
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+  // Keep x-user-email as fallback during transition
+  const email = getCurrentUserEmail();
+  if (email) {
+    headers['x-user-email'] = email;
+  }
+  return headers;
+}
+
 // Entity class for API-based CRUD operations
 class APIEntity {
   constructor(tableName) {
@@ -36,19 +91,22 @@ class APIEntity {
   }
 
   async list(sortBy = '', limit = 100) {
-    const userEmail = getCurrentUserEmail();
-    const headers = {};
-    if (userEmail) headers['x-user-email'] = userEmail;
+    const headers = getAuthHeaders();
     
     const response = await fetch(`${API_BASE_URL}/entities/${this.tableName}?limit=${limit}`, { headers });
-    if (!response.ok) throw new Error(`Failed to list ${this.tableName}`);
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.error || `Failed to list ${this.tableName}`);
+    }
     return response.json();
   }
 
   async filter(criteria = {}) {
-    const userEmail = getCurrentUserEmail();
-    const headers = { 'Content-Type': 'application/json' };
-    if (userEmail) headers['x-user-email'] = userEmail;
+    const email = getCurrentUserEmail();
+    if (!email) {
+      throw new Error('Not authenticated. Please log in again.');
+    }
+    const headers = getAuthHeaders({ 'Content-Type': 'application/json' });
     
     const response = await fetch(
       `${API_BASE_URL}/entities/${this.tableName}/filter`,
@@ -58,7 +116,10 @@ class APIEntity {
         body: JSON.stringify(criteria),
       }
     );
-    if (!response.ok) throw new Error(`Failed to filter ${this.tableName}`);
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.error || `Failed to filter ${this.tableName}`);
+    }
     return response.json();
   }
 
@@ -68,9 +129,7 @@ class APIEntity {
   }
 
   async create(data) {
-    const userEmail = getCurrentUserEmail();
-    const headers = { 'Content-Type': 'application/json' };
-    if (userEmail) headers['x-user-email'] = userEmail;
+    const headers = getAuthHeaders({ 'Content-Type': 'application/json' });
     
     const response = await fetch(
       `${API_BASE_URL}/entities/${this.tableName}`,
@@ -90,9 +149,7 @@ class APIEntity {
   }
 
   async update(id, data) {
-    const userEmail = getCurrentUserEmail();
-    const headers = { 'Content-Type': 'application/json' };
-    if (userEmail) headers['x-user-email'] = userEmail;
+    const headers = getAuthHeaders({ 'Content-Type': 'application/json' });
     
     const response = await fetch(
       `${API_BASE_URL}/entities/${this.tableName}/${id}`,
@@ -112,15 +169,16 @@ class APIEntity {
   }
 
   async delete(id) {
-    const userEmail = getCurrentUserEmail();
-    const headers = {};
-    if (userEmail) headers['x-user-email'] = userEmail;
+    const headers = getAuthHeaders();
     
     const response = await fetch(
       `${API_BASE_URL}/entities/${this.tableName}/${id}`,
       { method: 'DELETE', headers }
     );
-    if (!response.ok) throw new Error(`Failed to delete ${this.tableName}`);
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.error || `Failed to delete ${this.tableName}`);
+    }
     return response.json();
   }
 
@@ -191,10 +249,7 @@ class APIFunctions {
         const userEmail = getCurrentUserEmail();
         return fetch(`${API_BASE_URL}/functions/getSubscriptionStatus`, {
           method: 'POST',
-          headers: { 
-            'Content-Type': 'application/json',
-            'x-user-email': userEmail || ''
-          },
+          headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify({ user_email: userEmail })
         }).then(r => r.json()).catch(err => {
           console.error('Error calling getSubscriptionStatus:', err);
@@ -202,6 +257,17 @@ class APIFunctions {
         });
       case 'popDownUser':
         return { success: true };
+      case 'cleanupStalePopups': {
+        const cleanupEmail = getCurrentUserEmail();
+        return fetch(`${API_BASE_URL}/functions/cleanupStalePopups`, {
+          method: 'POST',
+          headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({})
+        }).then(r => r.json()).catch(err => {
+          console.error('Error calling cleanupStalePopups:', err);
+          return { success: false, error: err.message };
+        });
+      }
       default:
         return { success: true };
     }
@@ -212,11 +278,12 @@ class APIFunctions {
 class APIAuth {
   constructor() {
     this.currentUser = this.loadUser();
+    this.token = this.loadToken();
   }
 
   loadUser() {
     if (typeof window === 'undefined') return null;
-    const stored = localStorage.getItem('mock_auth_user');
+    const stored = localStorage.getItem(AUTH_USER_KEY);
     if (stored) {
       try {
         return JSON.parse(stored);
@@ -227,62 +294,108 @@ class APIAuth {
     return null;
   }
 
-  saveUser(user) {
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('mock_auth_user', JSON.stringify(user));
-    }
-    this.currentUser = user;
+  loadToken() {
+    if (typeof window === 'undefined') return null;
+    return localStorage.getItem(AUTH_TOKEN_KEY);
   }
 
+  saveAuth(user, token) {
+    if (typeof window !== 'undefined') {
+      // Save to unified keys
+      localStorage.setItem(AUTH_USER_KEY, JSON.stringify(user));
+      if (token) {
+        localStorage.setItem(AUTH_TOKEN_KEY, token);
+      }
+    }
+    this.currentUser = user;
+    this.token = token || this.token;
+  }
+
+  clearAuth() {
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem(AUTH_USER_KEY);
+      localStorage.removeItem(AUTH_TOKEN_KEY);
+      // Clean up any legacy keys that might linger
+      localStorage.removeItem('mock_auth_user');
+      localStorage.removeItem('mock_auth_token');
+      localStorage.removeItem('auth_user');
+      localStorage.removeItem('auth_token');
+      localStorage.removeItem('redirect_after_login');
+      localStorage.removeItem('device_id');
+    }
+    this.currentUser = null;
+    this.token = null;
+  }
+
+  /**
+   * Verify the current session with the server.
+   * Returns the user object if valid, null otherwise.
+   */
   async me() {
-    return new Promise((resolve) => {
-      setTimeout(() => {
-        console.log('[DEBUG apiBase44.me] Called');
-        // Always check localStorage first in case user logged in elsewhere
-        const freshUser = this.loadUser();
-        console.log('[DEBUG apiBase44.me] Loaded from localStorage:', freshUser?.email || 'NOT FOUND');
-        console.log('[DEBUG apiBase44.me] this.currentUser:', this.currentUser?.email || 'NOT SET');
-        const result = freshUser || this.currentUser;
-        console.log('[DEBUG apiBase44.me] Returning user:', result?.email || 'NULL');
-        resolve(result);
-      }, 100);
-    });
+    // If no token stored, user is not logged in
+    const token = this.loadToken();
+    if (!token) {
+      this.currentUser = null;
+      return null;
+    }
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/auth/me`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+
+      if (!response.ok) {
+        // Token is invalid or expired — clear auth
+        console.warn('[APIAuth.me] Token validation failed, clearing auth');
+        this.clearAuth();
+        return null;
+      }
+
+      const user = await response.json();
+      // Update local cache (but keep existing token)
+      this.saveAuth(user, token);
+      return user;
+    } catch (error) {
+      console.error('[APIAuth.me] Error validating token:', error);
+      // Network error — return cached user so the app works offline
+      return this.loadUser();
+    }
   }
 
   async login(email, password) {
-    console.log('[DEBUG apiBase44.login] Starting login with email:', email);
     if (!email || !password) {
       throw new Error('Email and password are required');
+    }
+
+    if (password.length < 8) {
+      throw new Error('Password must be at least 8 characters');
     }
 
     const response = await fetch(`${API_BASE_URL}/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ 
-        email, 
-        password,
-        name: email.split('@')[0] 
-      }),
+      body: JSON.stringify({ email, password }),
     });
 
     if (!response.ok) {
       const errorData = await response.json();
-      console.log('[DEBUG apiBase44.login] Login failed:', errorData.error);
+      // Pass through email_not_verified flag for the Login page to handle
+      if (errorData.email_not_verified) {
+        const err = new Error(errorData.error || 'Email not verified');
+        err.email_not_verified = true;
+        err.email = errorData.email;
+        throw err;
+      }
       throw new Error(errorData.error || 'Login failed');
     }
     
-    const user = await response.json();
-    console.log('[DEBUG apiBase44.login] Login response received:', user.email);
-    console.log('[DEBUG apiBase44.login] Saving user to localStorage...');
-    this.saveUser(user);
-    console.log('[DEBUG apiBase44.login] Saved. Checking localStorage...');
-    const checkSaved = this.loadUser();
-    console.log('[DEBUG apiBase44.login] Verified in localStorage:', checkSaved?.email);
+    const data = await response.json();
+    const { token, ...user } = data;
+    this.saveAuth(user, token);
     return user;
   }
 
   async signup(email, password) {
-    console.log('[DEBUG apiBase44.signup] Starting signup with email:', email);
     if (!email || !password) {
       throw new Error('Email and password are required');
     }
@@ -303,22 +416,57 @@ class APIAuth {
 
     if (!response.ok) {
       const errorData = await response.json();
-      console.log('[DEBUG apiBase44.signup] Signup failed:', errorData.error);
       throw new Error(errorData.error || 'Signup failed');
     }
     
-    const user = await response.json();
-    console.log('[DEBUG apiBase44.signup] Signup response received:', user.email);
-    console.log('[DEBUG apiBase44.signup] Saving user to localStorage...');
-    this.saveUser(user);
-    console.log('[DEBUG apiBase44.signup] Saved. Checking localStorage...');
-    const checkSaved = this.loadUser();
-    console.log('[DEBUG apiBase44.signup] Verified in localStorage:', checkSaved?.email);
-    return user;
+    const data = await response.json();
+    // Signup no longer returns a JWT — user must verify OTP first
+    // Do NOT save auth here; the VerifyOtp page will handle that after verification
+    return data;
+  }
+
+  async verifyOtp(email, otp) {
+    if (!email || !otp) {
+      throw new Error('Email and verification code are required');
+    }
+
+    const response = await fetch(`${API_BASE_URL}/auth/verify-otp`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, otp }),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.error || 'Verification failed');
+    }
+    
+    const data = await response.json();
+    const { token, message, ...user } = data;
+    this.saveAuth(user, token);
+    return { user, message };
+  }
+
+  async resendOtp(email) {
+    if (!email) {
+      throw new Error('Email is required');
+    }
+
+    const response = await fetch(`${API_BASE_URL}/auth/resend-otp`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email }),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.error || 'Failed to resend code');
+    }
+    
+    return response.json();
   }
 
   async forgotPassword(email) {
-    console.log('[DEBUG apiBase44.forgotPassword] Starting forgot password with email:', email);
     if (!email) {
       throw new Error('Email is required');
     }
@@ -331,17 +479,13 @@ class APIAuth {
 
     if (!response.ok) {
       const errorData = await response.json();
-      console.log('[DEBUG apiBase44.forgotPassword] Forgot password failed:', errorData.error);
       throw new Error(errorData.error || 'Failed to send reset email');
     }
     
-    const result = await response.json();
-    console.log('[DEBUG apiBase44.forgotPassword] Reset email sent successfully');
-    return result;
+    return response.json();
   }
 
   async resetPassword(token, newPassword) {
-    console.log('[DEBUG apiBase44.resetPassword] Starting password reset');
     if (!token || !newPassword) {
       throw new Error('Token and new password are required');
     }
@@ -358,52 +502,41 @@ class APIAuth {
 
     if (!response.ok) {
       const errorData = await response.json();
-      console.log('[DEBUG apiBase44.resetPassword] Reset password failed:', errorData.error);
       throw new Error(errorData.error || 'Failed to reset password');
     }
     
-    const result = await response.json();
-    console.log('[DEBUG apiBase44.resetPassword] Password reset successfully');
-    return result;
+    return response.json();
   }
 
   async logout(redirectUrl = null) {
     try {
-      // Get user email before clearing state
       const userEmail = this.currentUser?.email;
       
-      // Clear local storage first
-      localStorage.removeItem('mock_auth_user');
-      localStorage.removeItem('mock_auth_token');
-      localStorage.removeItem('redirect_after_login');
-      localStorage.removeItem('device_id');
-      this.currentUser = null;
+      // Clear all auth state
+      this.clearAuth();
       
-      // Try to clear sessions from backend
+      // Notify backend
       if (userEmail) {
         try {
-          const response = await fetch(`${API_BASE_URL}/auth/logout`, {
+          await fetch(`${API_BASE_URL}/auth/logout`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ email: userEmail })
           });
-          console.log('✅ Backend logout response:', response.status);
         } catch (error) {
-          console.warn('⚠️ Backend logout failed (continuing):', error.message);
+          console.warn('Backend logout failed (continuing):', error.message);
         }
       }
       
-      // Redirect or resolve
+      // Redirect
       if (typeof window !== 'undefined') {
         const targetUrl = redirectUrl || window.location.origin;
-        console.log('🔄 Redirecting to:', targetUrl);
         setTimeout(() => {
           window.location.href = targetUrl;
         }, 100);
       }
     } catch (error) {
-      console.error('❌ Logout error:', error);
-      // Force redirect anyway
+      console.error('Logout error:', error);
       if (typeof window !== 'undefined') {
         window.location.href = window.location.origin;
       }
@@ -417,7 +550,7 @@ class APIAuth {
   }
 
   isAuthenticated() {
-    return !!this.currentUser;
+    return !!this.currentUser && !!this.token;
   }
 }
 
@@ -451,6 +584,7 @@ class APIBase44 {
       UserSession: new APIEntity('UserSession'),
       VideoSignal: new APIEntity('VideoSignal'),
       Reel: new APIEntity('Reel'),
+      ProfileVideo: new APIEntity('ProfileVideo'),
     };
     
     // Service role for admin operations
@@ -461,24 +595,7 @@ class APIBase44 {
   }
 
   async initializeDefaultUser() {
-    // Auto-login with demo user if not already authenticated
-    if (!this.auth.currentUser) {
-      try {
-        const response = await fetch(`${API_BASE_URL}/auth/login`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email: 'demo@example.com', name: 'Demo User' }),
-        });
-        
-        if (response.ok) {
-          const user = await response.json();
-          this.auth.saveUser(user);
-          return user;
-        }
-      } catch (error) {
-        console.warn('Failed to auto-login with demo user:', error.message);
-      }
-    }
+    // Legacy demo auto-login is intentionally disabled.
     return this.auth.currentUser;
   }
 }

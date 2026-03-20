@@ -4,6 +4,7 @@
  */
 
 import pg from 'pg';
+import bcrypt from 'bcryptjs';
 const { Pool } = pg;
 
 const pool = new Pool({
@@ -19,10 +20,9 @@ const ADMIN_EMAIL = 'gdanish365@gmail.com';
 const ADMIN_PASSWORD = '00000000';  // Password must be at least 8 characters
 const ADMIN_NAME = 'Danish';
 
-// Simple base64 encoding (matches server.js logic)
-const passwordHash = Buffer.from(ADMIN_PASSWORD).toString('base64');
-
 async function createAdminUser() {
+  // Hash password with bcrypt
+  const passwordHash = await bcrypt.hash(ADMIN_PASSWORD, 12);
   console.log('🔧 Creating Admin User for Pop-Up Play...\n');
   
   try {

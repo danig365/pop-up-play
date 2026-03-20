@@ -15,10 +15,12 @@ import Profile from './pages/Profile';
 import Reels from './pages/Reels';
 import ResetPassword from './pages/ResetPassword';
 import Signup from './pages/Signup';
+import VerifyOtp from './pages/VerifyOtp';
 import SubscriptionSettings from './pages/SubscriptionSettings';
 import SubscriptionSuccess from './pages/SubscriptionSuccess';
 import VideoCall from './pages/VideoCall';
 import OnlineMembers from './pages/OnlineMembers';
+import PrivacyPolicy from './pages/PrivacyPolicy';
 import __Layout from './Layout.jsx';
 
 
@@ -40,10 +42,12 @@ export const PAGES = {
     "Reels": Reels,
     "ResetPassword": ResetPassword,
     "Signup": Signup,
+    "VerifyOtp": VerifyOtp,
     "SubscriptionSettings": SubscriptionSettings,
     "SubscriptionSuccess": SubscriptionSuccess,
     "VideoCall": VideoCall,
     "OnlineMembers": OnlineMembers,
+    "PrivacyPolicy": PrivacyPolicy,
 }
 
 export const pagesConfig = {

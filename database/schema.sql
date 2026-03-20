@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS "User" (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   email VARCHAR(255) UNIQUE NOT NULL,
   name VARCHAR(255) NOT NULL,
+  role VARCHAR(50) DEFAULT 'user',
   password_hash VARCHAR(255),
   created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -30,16 +31,29 @@ CREATE TABLE IF NOT EXISTS "UserProfile" (
   zip_code VARCHAR(20),
   country VARCHAR(255),
   is_popped_up BOOLEAN DEFAULT false,
+  has_ever_popped_up BOOLEAN DEFAULT false,
   popup_message TEXT,
   photos TEXT[] DEFAULT ARRAY[]::TEXT[],
   videos TEXT[] DEFAULT ARRAY[]::TEXT[],
   location VARCHAR(255),
   latitude DECIMAL(10, 8),
   longitude DECIMAL(11, 8),
+  email_notifications_enabled BOOLEAN DEFAULT true,
   last_location_update TIMESTAMP,
   created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT unique_user_profile UNIQUE(user_email)
+);
+
+-- Profile Videos table (separate records so each video can track views)
+CREATE TABLE IF NOT EXISTS "ProfileVideo" (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_email VARCHAR(255) NOT NULL REFERENCES "User"(email) ON DELETE CASCADE,
+  video_url TEXT NOT NULL,
+  caption TEXT,
+  views INTEGER DEFAULT 0,
+  created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 -- User Subscriptions table
@@ -78,6 +92,7 @@ CREATE TABLE IF NOT EXISTS "Message" (
   read BOOLEAN DEFAULT false,
   is_read BOOLEAN DEFAULT false,
   conversation_id VARCHAR(255),
+  deleted_for TEXT[] DEFAULT ARRAY[]::TEXT[],
   attachment_url TEXT,
   created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -90,6 +105,11 @@ CREATE TABLE IF NOT EXISTS "AccessCode" (
   usage_limit INTEGER,
   used_count INTEGER DEFAULT 0,
   is_active BOOLEAN DEFAULT true,
+  valid_until TIMESTAMP,
+  is_used BOOLEAN DEFAULT false,
+  used_by VARCHAR(255),
+  used_at TIMESTAMP,
+  created_by VARCHAR(255),
   description TEXT,
   created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -167,6 +187,8 @@ CREATE TABLE IF NOT EXISTS "Reel" (
 -- Create indexes for better query performance
 CREATE INDEX IF NOT EXISTS idx_user_email ON "User"(email);
 CREATE INDEX IF NOT EXISTS idx_userprofile_email ON "UserProfile"(user_email);
+CREATE INDEX IF NOT EXISTS idx_profilevideo_user_email ON "ProfileVideo"(user_email);
+CREATE INDEX IF NOT EXISTS idx_profilevideo_created_date ON "ProfileVideo"(created_date);
 CREATE INDEX IF NOT EXISTS idx_usersubscription_email ON "UserSubscription"(user_email);
 CREATE INDEX IF NOT EXISTS idx_message_sender ON "Message"(sender_email);
 CREATE INDEX IF NOT EXISTS idx_message_recipient ON "Message"(recipient_email);

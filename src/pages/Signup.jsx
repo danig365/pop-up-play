@@ -86,17 +86,23 @@ export default function Signup() {
         throw new Error(errorData.error || 'Google authentication failed');
       }
 
-      const user = await response.json();
-      console.log('[DEBUG GoogleAuth] ✅ Google auth successful:', user.email);
+      const data = await response.json();
+      const { token, ...user } = data;
+      console.log('[GoogleAuth] Google auth successful:', user.email);
       
-      // Save user to localStorage
-      localStorage.setItem('mock_auth_user', JSON.stringify(user));
+      // Save user and JWT token via the auth module
+      base44.auth.saveAuth(user, token);
       
       await new Promise(resolve => setTimeout(resolve, 200));
       await checkUserAuth();
       
-      console.log('[DEBUG GoogleAuth] 🔄 Navigating to Home...');
-      navigate(createPageUrl('Home'));
+      if (user.is_new_user) {
+        console.log('[DEBUG GoogleAuth] 🔄 New user — navigating to Profile...');
+        navigate(createPageUrl('Profile'));
+      } else {
+        console.log('[DEBUG GoogleAuth] 🔄 Existing user — navigating to Home...');
+        navigate(createPageUrl('Home'));
+      }
     } catch (err) {
       console.error('[DEBUG GoogleAuth] ❌ Google auth error:', err);
       setError(err.message || 'Google authentication failed. Please try again.');
@@ -149,32 +155,12 @@ export default function Signup() {
 
     setIsLoading(true);
     try {
-      console.log('[DEBUG Signup] 📝 handleSignup started');
-      console.log('[DEBUG Signup] Email:', email);
+      const result = await base44.auth.signup(email, password);
 
-      // Call signup endpoint
-      console.log('[DEBUG Signup] Calling base44.auth.signup()...');
-      const user = await base44.auth.signup(email, password);
-      console.log('[DEBUG Signup] ✅ base44.auth.signup() returned:', user.email);
-
-      // Check what's in localStorage
-      const savedUser = localStorage.getItem('mock_auth_user');
-      console.log('[DEBUG Signup] localStorage mock_auth_user:', savedUser ? JSON.parse(savedUser).email : 'NOT FOUND');
-
-      // Small delay to ensure localStorage is updated
-      console.log('[DEBUG Signup] Waiting 200ms...');
-      await new Promise(resolve => setTimeout(resolve, 200));
-
-      // Call checkUserAuth to update AuthContext state
-      console.log('[DEBUG Signup] Calling checkUserAuth() to update AuthContext...');
-      await checkUserAuth();
-      console.log('[DEBUG Signup] ✅ checkUserAuth() complete - AuthContext updated');
-
-      // Navigate to Home
-      console.log('[DEBUG Signup] 🔄 Navigating to Home...');
-      navigate(createPageUrl('Home'));
+      // Signup now requires OTP verification — navigate to verify page
+      navigate(createPageUrl('VerifyOtp'), { state: { email } });
     } catch (err) {
-      console.error('[DEBUG Signup] ❌ Signup error:', err);
+      console.error('[Signup] Signup error:', err);
       setError(err.message || 'Signup failed. Please try again.');
     } finally {
       setIsLoading(false);

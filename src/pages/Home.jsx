@@ -10,6 +10,11 @@ import MapSoundNotifications from '@/components/map/MapSoundNotifications';
 import { Link } from 'react-router-dom';
 import { createPageUrl } from '@/utils';
 import { User, Settings, Sparkles } from 'lucide-react';
+import reelsImage from '@/assets/image-removebg-preview.png';
+
+// Preload the reels image immediately
+const preloadImg = new Image();
+preloadImg.src = reelsImage;
 import { Textarea } from '@/components/ui/textarea';
 import { Button } from '@/components/ui/button';
 import { useNavigate } from 'react-router-dom';
@@ -50,30 +55,27 @@ export default function Home() {
   const { data: activeUsers = [] } = useQuery({
     queryKey: ['activeUsers'],
     queryFn: async () => {
-      try {
-        await base44.functions.invoke('cleanupStalePopups', {});
-      } catch (error) {
-        console.warn('Failed to cleanup stale popups:', error?.message || error);
-      }
       const profiles = await base44.entities.UserProfile.filter({ is_popped_up: true });
       return profiles;
     },
     refetchInterval: 30000 // Refresh every 30 seconds
   });
 
-  const { data: unreadCount = 0 } = useQuery({
-    queryKey: ['unreadMessages', user?.email],
+  const { data: unreadMessagesRaw = [] } = useQuery({
+    queryKey: ['unreadMessagesList', user?.email],
     queryFn: async () => {
-      if (!user?.email) return 0;
-      const allMessages = await base44.entities.Message.filter({
+      if (!user?.email) return [];
+      const msgs = await base44.entities.Message.filter({
         receiver_email: user.email,
         read: false
       });
-      return allMessages.length;
+      return msgs;
     },
     enabled: !!user?.email,
     refetchInterval: 5000
   });
+  const unreadMessages = Array.isArray(unreadMessagesRaw) ? unreadMessagesRaw : [];
+  const unreadCount = unreadMessages.length;
 
   const updateProfileMutation = useMutation({
     mutationFn: async (data) => {
@@ -82,7 +84,7 @@ export default function Home() {
       } else {
         return base44.entities.UserProfile.create({
           user_email: user.email,
-          display_name: user.full_name,
+          display_name: user.name || user.email.split('@')[0],
           ...data
         });
       }
@@ -96,18 +98,45 @@ export default function Home() {
   const handleLocationUpdate = useCallback((locationInfo) => {
     setUserLocation(locationInfo);
     if (user?.email) {
-      // Update GPS coordinates, location name, AND zip code
+      // Update GPS coordinates and location name only - NOT zip_code
+      // zip_code is set permanently in the profile edit page
       const updateData = {
         latitude: locationInfo.latitude,
         longitude: locationInfo.longitude,
         location: locationInfo.city,
-        zip_code: locationInfo.zip || null,
         last_location_update: locationInfo.timestamp
       };
       
       updateProfileMutation.mutate(updateData);
     }
   }, [user?.email]);
+
+  // Auto pop-up ONLY for brand-new users (first signup) once GPS location is acquired
+  const autoPopTriggeredRef = React.useRef(false);
+  useEffect(() => {
+    if (
+      !autoPopTriggeredRef.current &&
+      myProfile &&
+      !myProfile.is_popped_up &&
+      !myProfile.has_ever_popped_up &&
+      userLocation?.latitude &&
+      userLocation?.longitude
+    ) {
+      // Only auto-pop users who have NEVER popped up before (first signup only)
+      autoPopTriggeredRef.current = true;
+      const defaultMessage = 'Just joined! Looking to connect.';
+      setPopupMessage(defaultMessage);
+      updateProfileMutation.mutate({
+        is_popped_up: true,
+        has_ever_popped_up: true,
+        popup_message: defaultMessage,
+        latitude: userLocation.latitude,
+        longitude: userLocation.longitude,
+        location: userLocation.city,
+        last_location_update: new Date().toISOString()
+      });
+    }
+  }, [myProfile, userLocation]);
 
   const [popupMessage, setPopupMessage] = useState('');
 
@@ -118,17 +147,22 @@ export default function Home() {
   }, [myProfile?.popup_message]);
 
   const handlePopToggle = async (isPopping) => {
-    if (isPopping && !guardAction('pop up on the map')) return;
+    // No subscription required to pop up
     if (isPopping && !popupMessage.trim()) {
       return; // Don't allow popping up without a message
     }
 
     setIsUpdating(true);
-    await updateProfileMutation.mutateAsync({
+    const updateData = {
       is_popped_up: isPopping,
       popup_message: isPopping ? popupMessage : '',
       last_location_update: isPopping ? new Date().toISOString() : myProfile?.last_location_update
-    });
+    };
+    // Mark that this user has popped up at least once (disables future auto-popup)
+    if (isPopping && !myProfile?.has_ever_popped_up) {
+      updateData.has_ever_popped_up = true;
+    }
+    await updateProfileMutation.mutateAsync(updateData);
     setIsUpdating(false);
   };
 
@@ -183,17 +217,30 @@ export default function Home() {
         <div className="max-w-7xl mx-auto">
           {/* Members Online Button */}
           <motion.div
-            className="mb-6 flex justify-center"
+            className="mb-6 flex flex-col items-center gap-3 max-w-sm mx-auto w-full"
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.05 }}>
-            <Link to={createPageUrl('OnlineMembers') + '?from=home'}>
+            <Link to={createPageUrl('OnlineMembers') + '?from=home'} className="w-full">
               <Button 
-                className="bg-gradient-to-r from-emerald-500 to-green-600 hover:from-emerald-600 hover:to-green-700 text-white px-5 py-3 rounded-full shadow-xl hover:shadow-2xl transition-all flex items-center gap-2 text-sm font-semibold"
+                className="w-full bg-gradient-to-r from-emerald-500 to-green-600 hover:from-emerald-600 hover:to-green-700 text-white px-5 py-3 rounded-full shadow-xl hover:shadow-2xl transition-all flex items-center gap-2 text-sm font-semibold justify-center"
                 style={{ zIndex: 1000 }}>
                 <User className="w-4 h-4" />
                 Members Popped Up ({activeUsers.length})
               </Button>
+            </Link>
+            <Link to={createPageUrl('Reels')} state={{ from: 'Home' }} className="w-full">
+              <div className="w-full">
+                <div className="flex items-center bg-white rounded-2xl shadow-lg p-4 hover:shadow-xl transition-all cursor-pointer gap-4">
+                  <div className="bg-pink-300 w-16 h-16 rounded-full flex items-center justify-center overflow-hidden flex-shrink-0">
+                    <img src={reelsImage} alt="Reels" className="w-14 h-14 object-contain" />
+                  </div>
+                  <div className="flex flex-col justify-center">
+                    <span className="text-xl font-[Mashiro] tracking-wide text-black-500 mb-1">Reels</span>
+                    <span className="text-base text-slate-500">Watch and share reels</span>
+                  </div>
+                </div>
+              </div>
             </Link>
           </motion.div>
 
@@ -218,6 +265,7 @@ export default function Home() {
               activeUsers={activeUsers}
               currentUserProfile={myProfile}
               userLocation={userLocation}
+              unreadMessages={unreadMessages}
               onProfileClick={(profile) => {
                 if (!guardAction('view full profiles')) return;
                 navigate(createPageUrl('Profile') + '?user=' + profile.user_email);

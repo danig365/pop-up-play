@@ -4,22 +4,14 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
 import { ArrowLeft, Ban, Loader2, UserX } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Link } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { createPageUrl } from '@/utils';
 import { toast } from 'sonner';
 
 export default function BlockedUsers() {
+  const navigate = useNavigate();
   const [user, setUser] = useState(null);
-  const [backUrl, setBackUrl] = useState(createPageUrl('Home'));
   const queryClient = useQueryClient();
-
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const fromParam = params.get('from');
-    if (fromParam === 'dashboard') {
-      setBackUrl(createPageUrl('Dashboard'));
-    }
-  }, []);
 
   useEffect(() => {
     const loadUser = async () => {
@@ -81,11 +73,14 @@ export default function BlockedUsers() {
       {/* Header */}
       <header className="sticky top-0 z-50 bg-white/80 backdrop-blur-lg border-b border-slate-100">
         <div className="max-w-2xl mx-auto px-4 py-4 flex items-center justify-between">
-          <Link to={backUrl}>
-            <Button variant="ghost" size="icon" className="rounded-full">
-              <ArrowLeft className="w-5 h-5" />
-            </Button>
-          </Link>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="rounded-full"
+            onClick={() => navigate(-1)}
+          >
+            <ArrowLeft className="w-5 h-5" />
+          </Button>
           <h1 className="text-lg font-semibold text-slate-800">Blocked Users</h1>
           <div className="w-10"></div>
         </div>

@@ -9,6 +9,10 @@ import { useQuery } from '@tanstack/react-query';
 import { base44 } from '@/api/base44Client';
 import reelsImage from '@/assets/image-removebg-preview.png';
 
+// Preload the reels image immediately so it renders with other icons
+const preloadImg = new Image();
+preloadImg.src = reelsImage;
+
 export default function Menu() {
   const [user, setUser] = React.useState(null);
 // Fetch current user on component mount
@@ -92,6 +96,13 @@ export default function Menu() {
       path: 'Pricing',
       color: 'bg-green-300',
       description: 'View membership plans'
+    },
+    {
+      label: 'Privacy Policy',
+      icon: Shield,
+      path: 'PrivacyPolicy',
+      color: 'bg-slate-300',
+      description: 'View our privacy policy'
     },
     {
       label: 'Sign Out',
@@ -182,14 +193,18 @@ export default function Menu() {
                 className="bg-white rounded-2xl shadow-lg p-6 hover:shadow-xl transition-all cursor-pointer"
               >
                 <div className="flex items-center gap-4">
-                  <div className={`${item.color} w-16 h-16 rounded-full flex items-center justify-center relative overflow-hidden`}>
-                    {item.isImage ? (
-                      <img src={Icon} alt={item.label} className={item.label === 'Reels' ? 'w-14 h-14 object-contain' : 'w-8 h-8 object-contain'} />
-                    ) : (
-                      <Icon className="w-8 h-8 text-slate-700" />
-                    )}
+                  <div className="relative">
+                    <div className={`${item.color} w-16 h-16 rounded-full flex items-center justify-center overflow-hidden`}>
+                      {item.isImage ? (
+                        <img src={Icon} alt={item.label} loading="eager" fetchPriority="high" className={item.label === 'Reels' ? 'w-14 h-14 object-contain' : 'w-8 h-8 object-contain'} />
+                      ) : (
+                        <Icon className="w-8 h-8 text-slate-700" />
+                      )}
+                    </div>
                     {item.badge > 0 && (
-                      <NotificationBadge count={item.badge} className="absolute -top-2 -right-2" />
+                      <span className="absolute -top-1 -right-1 min-w-[22px] h-[22px] flex items-center justify-center rounded-full bg-red-500 text-white text-xs font-bold px-1 leading-none shadow-lg z-10">
+                        {item.badge > 99 ? '99+' : item.badge}
+                      </span>
                     )}
                   </div>
                   <div className="flex-1">

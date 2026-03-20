@@ -5,7 +5,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
 import { ArrowLeft, Video, VideoOff, Mic, MicOff, PhoneOff, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Link } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import { createPageUrl } from '@/utils';
 import { toast } from 'sonner';
 
@@ -21,10 +21,14 @@ export default function VideoCall() {
   const [backUrl, setBackUrl] = useState(createPageUrl('Home'));
   const [peerConnectionReady, setPeerConnectionReady] = useState(false); // Track if peer connection is fully set up
 
+  const location = useLocation();
+  const offerFromStateRef = useRef(location.state?.offerSignalData || null);
+
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
   const peerConnectionRef = useRef(null);
   const localStreamRef = useRef(null);
+  const remoteStreamRef = useRef(null); // Persist remote stream for reconnection
   const ringingAudioRef = useRef(null);
   const pendingIceCandidatesRef = useRef([]); // Queue ICE candidates until remote description is set
   const remoteDescriptionSetRef = useRef(false); // Track if remote description has been set
@@ -222,8 +226,12 @@ export default function VideoCall() {
           console.log('   Track kind:', event.track.kind);
           console.log('   Streams count:', event.streams.length);
           
-          if (remoteVideoRef.current && event.streams[0]) {
-            remoteVideoRef.current.srcObject = event.streams[0];
+          if (event.streams[0]) {
+            // Always save remote stream to ref for reconnection
+            remoteStreamRef.current = event.streams[0];
+            if (remoteVideoRef.current) {
+              remoteVideoRef.current.srcObject = event.streams[0];
+            }
             setIsConnecting(false);
             setCallStatus('connected');
             console.log('✅ [VideoCall] Call Status: CONNECTED');
@@ -286,10 +294,42 @@ export default function VideoCall() {
             ringingAudioRef.current.play().catch(err => console.log('Audio play failed:', err));
           }
         } else {
-          // Receiver: just wait for the incoming offer
-          console.log('📞 [VideoCall] RECEIVER MODE: Waiting for incoming OFFER...');
-          setIsConnecting(true);
-          setCallStatus('connecting');
+          // Receiver mode
+          if (offerFromStateRef.current) {
+            // Process offer immediately from state (passed by IncomingCallDetector)
+            console.log('📞 [VideoCall] RECEIVER MODE: Processing offer from state...');
+            try {
+              const offerData = JSON.parse(offerFromStateRef.current);
+              await pc.setRemoteDescription(new RTCSessionDescription(offerData));
+              remoteDescriptionSetRef.current = true;
+              console.log('   ✅ Remote description set from state offer');
+
+              const answer = await pc.createAnswer();
+              await pc.setLocalDescription(answer);
+              console.log('   📤 Sending ANSWER signal');
+              await sendSignalMutation.mutateAsync({
+                signal_type: 'answer',
+                signal_data: answer
+              });
+              console.log('   ✅ ANSWER sent successfully');
+              setCallStatus('connecting');
+              setIsConnecting(true);
+            } catch (err) {
+              console.error('❌ [VideoCall] Error processing offer from state:', err);
+              // Fall back to waiting for signal polling
+              setIsConnecting(true);
+              setCallStatus('connecting');
+            }
+          } else {
+            // No offer in state, wait for signal polling
+            console.log('📞 [VideoCall] RECEIVER MODE: Waiting for incoming OFFER...');
+            setIsConnecting(true);
+            setCallStatus('connecting');
+          }
+          // Play ringing sound for receiver while connecting
+          if (ringingAudioRef.current) {
+            ringingAudioRef.current.play().catch(err => console.log('Audio play failed:', err));
+          }
         }
         
         // Mark peer connection as ready for signal processing
@@ -319,13 +359,35 @@ export default function VideoCall() {
       if (peerConnectionRef.current) {
         peerConnectionRef.current.close();
       }
+      // Clean up ALL signals for this call from the database (fire and forget)
+      if (callId) {
+        base44.entities.VideoSignal.filter({ call_id: callId })
+          .then(signals => {
+            signals.forEach(signal => {
+              base44.entities.VideoSignal.delete(signal.id).catch(() => {});
+            });
+          })
+          .catch(() => {});
+      }
       // Reset refs and state on cleanup
       remoteDescriptionSetRef.current = false;
       pendingIceCandidatesRef.current = [];
       processedSignalsRef.current = new Set();
+      remoteStreamRef.current = null;
       setPeerConnectionReady(false);
     };
   }, [user?.email, otherUserEmail, callId]);
+
+  // Reconnect streams to video elements when video elements become available
+  // (handles race condition where getUserMedia/ontrack fire before otherProfile loads and video elements render)
+  useEffect(() => {
+    if (localVideoRef.current && localStreamRef.current) {
+      localVideoRef.current.srcObject = localStreamRef.current;
+    }
+    if (remoteVideoRef.current && remoteStreamRef.current) {
+      remoteVideoRef.current.srcObject = remoteStreamRef.current;
+    }
+  }, [otherProfile]);
 
   // Handle incoming signals
   useEffect(() => {
@@ -557,22 +619,21 @@ export default function VideoCall() {
       ringingAudioRef.current.currentTime = 0;
     }
     
-    // Clean up: Delete the original offer signal to prevent stale notifications
-    // This ensures the receiver won't see the call notification if they were offline
+    // Comprehensive cleanup: Delete ALL signals for this call to prevent stale notifications
     try {
-      const offerSignals = await base44.entities.VideoSignal.filter({
-        call_id: callId,
-        signal_type: 'offer'
+      const allCallSignals = await base44.entities.VideoSignal.filter({
+        call_id: callId
       });
-      for (const signal of offerSignals) {
+      console.log(`🧹 [VideoCall] Cleaning up ${allCallSignals.length} signal(s) for call ${callId}`);
+      for (const signal of allCallSignals) {
         try {
-          await deleteSignalMutation.mutateAsync(signal.id);
+          await base44.entities.VideoSignal.delete(signal.id);
         } catch (err) {
-          console.log('Failed to delete signal:', err);
+          console.log('Failed to delete signal:', err.message);
         }
       }
     } catch (err) {
-      console.log('Error cleaning up offer signals:', err);
+      console.log('Error cleaning up call signals:', err.message);
     }
     
     if (localStreamRef.current) {

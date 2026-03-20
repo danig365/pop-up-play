@@ -65,7 +65,7 @@ export default function Chat() {
     enabled: !!user?.email
   });
 
-  const { data: allMessages = [] } = useQuery({
+  const { data: allMessages = [], isLoading: messagesLoading } = useQuery({
     queryKey: ['allMessages', user?.email],
     queryFn: async () => {
       if (!user?.email) return [];
@@ -133,31 +133,7 @@ export default function Chat() {
         attachment_url
       });
 
-      // Send email notification to receiver (if they have it enabled)
-      try {
-        // Check if recipient has email notifications enabled
-        const recipientProfile = profiles.find(p => p.user_email === selectedConversation);
-        const emailNotificationsEnabled = recipientProfile?.email_notifications_enabled !== false;
-
-        if (emailNotificationsEnabled) {
-          const senderProfile = profiles.find(p => p.user_email === user.email);
-          const senderName = senderProfile?.display_name || user.email.split('@')[0] || 'Someone';
-          
-          await fetch(`${getApiBaseUrl()}/email/send-chat-notification`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              recipientEmail: selectedConversation,
-              senderEmail: user.email,
-              senderName: senderName,
-              messageContent: content
-            })
-          });
-        }
-      } catch (emailError) {
-        console.error('Failed to send email notification:', emailError);
-        // Don't fail the message if email fails
-      }
+      // Email notification is now handled server-side automatically when a Message is created
 
       return message;
     },
@@ -263,7 +239,8 @@ export default function Chat() {
                 selectedUserEmail={selectedConversation}
                 onSelectConversation={setSelectedConversation}
                 currentUserEmail={user.email}
-                onDeleteConversation={handleDeleteConversation} />
+                onDeleteConversation={handleDeleteConversation}
+                isLoading={messagesLoading} />
 
             </div>
 

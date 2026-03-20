@@ -108,7 +108,9 @@ export default function ChatConversation({
           </Link>
         
         <div className="flex-1">
-          <h2 className="font-semibold text-slate-800">{otherProfile.display_name}</h2>
+          <Link to={createPageUrl('Profile') + `?user=${otherUserEmail}&back=Chat&chatWith=${otherUserEmail}`}>
+            <h2 className="font-semibold text-slate-800 hover:text-violet-600 cursor-pointer transition-colors">{otherProfile.display_name}</h2>
+          </Link>
           {otherProfile.is_popped_up ? (
             <div className="flex items-center gap-1 text-xs text-green-600">
               <div className="w-2 h-2 rounded-full bg-green-500"></div>

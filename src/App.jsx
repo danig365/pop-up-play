@@ -13,8 +13,10 @@ import UserNotRegisteredError from '@/components/UserNotRegisteredError';
 import Landing from './pages/Landing';
 import Login from './pages/Login';
 import Signup from './pages/Signup';
+import VerifyOtp from './pages/VerifyOtp';
 import ForgotPassword from './pages/ForgotPassword';
 import ResetPassword from './pages/ResetPassword';
+import PrivacyPolicy from './pages/PrivacyPolicy';
 import { GoogleOAuthProvider } from '@react-oauth/google';
 import { normalizeGoogleClientId, isGoogleClientIdConfigured } from '@/lib/googleAuth';
 
@@ -48,8 +50,10 @@ const AuthenticatedApp = () => {
         <Route path="/" element={<Landing />} />
         <Route path="/Login" element={<Login />} />
         <Route path="/Signup" element={<Signup />} />
+        <Route path="/VerifyOtp" element={<VerifyOtp />} />
         <Route path="/ForgotPassword" element={<ForgotPassword />} />
         <Route path="/reset-password" element={<ResetPassword />} />
+        <Route path="/PrivacyPolicy" element={<PrivacyPolicy />} />
         <Route path="*" element={<Landing />} />
       </Routes>
     );

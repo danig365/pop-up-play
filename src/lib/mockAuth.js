@@ -1,6 +1,12 @@
 /**
  * Real Authentication System - Uses PostgreSQL Backend
+ * NOTE: This module is kept for backward compatibility.
+ * The primary auth module is apiBase44.js (APIAuth class).
+ * Both now use the same unified localStorage keys.
  */
+
+const AUTH_USER_KEY = 'popup_auth_user';
+const AUTH_TOKEN_KEY = 'popup_auth_token';
 
 class RealAuth {
   constructor() {
@@ -11,52 +17,45 @@ class RealAuth {
 
   loadUser() {
     if (typeof window === 'undefined') return null;
-    const stored = localStorage.getItem('auth_user');
+    const stored = localStorage.getItem(AUTH_USER_KEY);
     return stored ? JSON.parse(stored) : null;
   }
 
   loadToken() {
     if (typeof window === 'undefined') return null;
-    return localStorage.getItem('auth_token');
+    return localStorage.getItem(AUTH_TOKEN_KEY);
   }
 
   saveUser(user) {
     if (typeof window !== 'undefined') {
-      localStorage.setItem('auth_user', JSON.stringify(user));
+      localStorage.setItem(AUTH_USER_KEY, JSON.stringify(user));
     }
     this.currentUser = user;
   }
 
   saveToken(token) {
     if (typeof window !== 'undefined') {
-      localStorage.setItem('auth_token', token);
+      localStorage.setItem(AUTH_TOKEN_KEY, token);
     }
     this.token = token;
   }
 
   async me() {
     try {
-      console.log('🔄 [RealAuth.me] Checking current user...');
-      console.log('🔄 [RealAuth.me] this.currentUser:', this.currentUser?.email);
-      console.log('🔄 [RealAuth.me] this.token exists:', !!this.token);
-      
       // Return the current user from memory
       if (this.currentUser && this.token) {
-        console.log('✅ [RealAuth.me] Found user in memory:', this.currentUser.email);
         return this.currentUser;
       }
       
       // Try to load from localStorage
       const stored = this.loadUser();
       if (stored) {
-        console.log('✅ [RealAuth.me] Found user in localStorage:', stored.email);
         return stored;
       }
       
-      console.log('⚠️ [RealAuth.me] No user found, returning null');
       return null;
     } catch (error) {
-      console.error('❌ [RealAuth.me] Error:', error);
+      console.error('[RealAuth.me] Error:', error);
     }
     return null;
   }
@@ -70,7 +69,7 @@ class RealAuth {
       const response = await fetch(`${this.apiUrl}/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password, name: email.split('@')[0] })
+        body: JSON.stringify({ email, password })
       });
 
       if (!response.ok) {
@@ -79,65 +78,49 @@ class RealAuth {
       }
 
       const data = await response.json();
-      const user = {
-        id: data.id,
-        email: data.email,
-        name: data.name,
-        role: data.role || 'user', // Get role from database
-        created_at: data.created_date,
-      };
+      const { token, ...user } = data;
 
       this.saveUser(user);
-      this.saveToken(data.token);
+      this.saveToken(token);
       
-      console.log('✅ Logged in as:', user.email, 'Role:', user.role);
       return user;
     } catch (error) {
-      console.error('❌ Login error:', error);
+      console.error('Login error:', error);
       throw error;
     }
   }
 
   async logout(redirectUrl = null) {
-    console.log('🔄 [RealAuth.logout] Starting logout...');
     const userEmail = this.currentUser?.email;
-    console.log('🔄 [RealAuth.logout] User email:', userEmail);
     
-    // Clear auth state immediately
-    console.log('🔄 [RealAuth.logout] Clearing localStorage...');
+    // Clear all auth state (unified + legacy keys)
+    localStorage.removeItem(AUTH_USER_KEY);
+    localStorage.removeItem(AUTH_TOKEN_KEY);
     localStorage.removeItem('mock_auth_user');
     localStorage.removeItem('mock_auth_token');
+    localStorage.removeItem('auth_user');
+    localStorage.removeItem('auth_token');
     localStorage.removeItem('redirect_after_login');
     localStorage.removeItem('device_id');
     this.currentUser = null;
     this.token = null;
-    console.log('✅ [RealAuth.logout] Local cleanup complete');
 
-    // Try to notify backend to clear sessions (fire and forget)
+    // Notify backend
     if (userEmail) {
       try {
-        console.log('🔄 [RealAuth.logout] Calling backend /api/auth/logout...');
-        const response = await fetch(`${this.apiUrl}/auth/logout`, { 
+        await fetch(`${this.apiUrl}/auth/logout`, { 
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ email: userEmail })
         });
-        
-        console.log('🔄 [RealAuth.logout] Backend response status:', response.status);
-        if (response.ok) {
-          const data = await response.json();
-          console.log('✅ [RealAuth.logout] Backend logout response:', data);
-        }
       } catch (error) {
-        console.error('⚠️ [RealAuth.logout] Backend logout failed (continuing anyway):', error);
+        console.warn('[RealAuth.logout] Backend logout failed (continuing):', error.message);
       }
     }
 
-    // Finally, redirect
+    // Redirect
     if (typeof window !== 'undefined') {
       const targetUrl = window.location.origin;
-      console.log('🔄 [RealAuth.logout] Redirecting to:', targetUrl);
-      // Use setTimeout to ensure state updates are processed
       setTimeout(() => {
         window.location.href = targetUrl;
       }, 100);

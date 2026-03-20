@@ -1,11 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { base44 } from '@/api/base44Client';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
 import { ArrowLeft, Video, MessageCircle, Loader2, MapPin, Users, Filter } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { createPageUrl } from '@/utils';
 import BlockButton from '@/components/blocking/BlockButton';
 import { useSubscription } from '@/lib/SubscriptionContext';
@@ -27,31 +27,73 @@ const calculateDistance = (lat1, lon1, lat2, lon2) => {
 
 export default function OnlineMembers() {
   const [user, setUser] = useState(null);
+  const [userLoading, setUserLoading] = useState(true);
   const [interestFilter, setInterestFilter] = useState('');
+  const [locationFilter, setLocationFilter] = useState('');
   const [backUrl, setBackUrl] = useState('Menu');
   const [geocodedCities, setGeocodedCities] = useState({});
   const navigate = useNavigate();
+  const location = useLocation();
   const { guardAction } = useSubscription();
+  const queryClient = useQueryClient();
+  const isMountedRef = useRef(true);
 
+  // Reset state whenever the page is accessed
   useEffect(() => {
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
+  // Detect route changes and reset state
+  useEffect(() => {
+    isMountedRef.current = true;
+    
+    // Reset filters when component mounts or route changes
+    setInterestFilter('');
+    setLocationFilter('');
+    setGeocodedCities({});
+    
+    // Clear all cache
+    queryClient.removeQueries({ queryKey: ['activeProfiles'] });
+    queryClient.removeQueries({ queryKey: ['myProfile'] });
+    queryClient.removeQueries({ queryKey: ['blockedUsers'] });
+    queryClient.removeQueries({ queryKey: ['unreadMessages'] });
+    
     const params = new URLSearchParams(window.location.search);
     const fromParam = params.get('from');
     if (fromParam === 'home') {
       setBackUrl('Home');
+    } else {
+      setBackUrl('Menu');
     }
-  }, []);
 
-  useEffect(() => {
+    // Load user data
     const loadUser = async () => {
       try {
+        if (!isMountedRef.current) return;
+        setUserLoading(true);
         const currentUser = await base44.auth.me();
-        setUser(currentUser);
+        if (isMountedRef.current) {
+          setUser(currentUser);
+        }
       } catch (err) {
-        base44.auth.redirectToLogin();
+        if (isMountedRef.current) {
+          base44.auth.redirectToLogin();
+        }
+      } finally {
+        if (isMountedRef.current) {
+          setUserLoading(false);
+        }
       }
     };
+
     loadUser();
-  }, []);
+
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, [location.pathname, queryClient]);
 
   const { data: blockedUsers = [] } = useQuery({
     queryKey: ['blockedUsers', user?.email],
@@ -59,7 +101,8 @@ export default function OnlineMembers() {
       if (!user?.email) return [];
       return base44.entities.BlockedUser.filter({ blocker_email: user.email });
     },
-    enabled: !!user?.email
+    enabled: !!user?.email && !userLoading,
+    staleTime: 5000
   });
 
   const { data: activeProfiles = [], isLoading } = useQuery({
@@ -74,7 +117,9 @@ export default function OnlineMembers() {
       return profiles;
     },
     refetchInterval: 30000,
-    enabled: !!user?.email
+    staleTime: 3000,
+    enabled: !!user?.email && !userLoading,
+    gcTime: 0
   });
 
   const { data: myProfile } = useQuery({
@@ -84,7 +129,20 @@ export default function OnlineMembers() {
       const profiles = await base44.entities.UserProfile.filter({ user_email: user.email });
       return profiles[0] || null;
     },
-    enabled: !!user?.email
+    enabled: !!user?.email && !userLoading,
+    staleTime: 5000
+  });
+
+  // Fetch unread messages for current user to show per-user badge counts
+  const { data: unreadMessages = [] } = useQuery({
+    queryKey: ['unreadMessages', user?.email],
+    queryFn: async () => {
+      if (!user?.email) return [];
+      return base44.entities.Message.filter({ receiver_email: user.email, read: false });
+    },
+    enabled: !!user?.email && !userLoading,
+    refetchInterval: 5000,
+    gcTime: 0
   });
 
   // Reverse geocode GPS coordinates to get city
@@ -136,6 +194,15 @@ export default function OnlineMembers() {
         )
       );
     }
+
+    // Filter by location
+    if (locationFilter.trim()) {
+      profiles = profiles.filter(p => {
+        const searchTerm = locationFilter.toLowerCase();
+        const city = (p.gpsCity || '').toLowerCase();
+        return city.includes(searchTerm);
+      });
+    }
     
     // Sort by distance (closest first)
     profiles.sort((a, b) => {
@@ -145,9 +212,28 @@ export default function OnlineMembers() {
     });
     
     return profiles;
-  }, [activeProfiles, myProfile, blockedUsers, interestFilter, geocodedCities]);
+  }, [activeProfiles, myProfile, blockedUsers, interestFilter, locationFilter, geocodedCities]);
 
-  if (!user || isLoading) {
+  if (userLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-violet-50 via-white to-rose-50">
+        <Loader2 className="w-8 h-8 text-violet-500 animate-spin" />
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-violet-50 via-white to-rose-50">
+        <div className="text-center">
+          <p className="text-slate-600 mb-4">Unable to load user information</p>
+          <Button onClick={() => window.location.reload()}>Reload Page</Button>
+        </div>
+      </div>
+    );
+  }
+
+  if (isLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-violet-50 via-white to-rose-50">
         <Loader2 className="w-8 h-8 text-violet-500 animate-spin" />
@@ -187,7 +273,7 @@ export default function OnlineMembers() {
       <main className="max-w-7xl mx-auto px-4 py-8">
         {/* Filter Bar */}
         <motion.div
-          className="mb-6"
+          className="mb-6 space-y-3"
           initial={{ opacity: 0, y: -10 }}
           animate={{ opacity: 1, y: 0 }}
         >
@@ -204,6 +290,26 @@ export default function OnlineMembers() {
                   variant="ghost"
                   size="sm"
                   onClick={() => setInterestFilter('')}
+                  className="text-slate-500">
+                  Clear
+                </Button>
+              )}
+            </div>
+          </div>
+
+          <div className="bg-white rounded-2xl shadow-sm p-4">
+            <div className="flex items-center gap-3">
+              <MapPin className="w-5 h-5 text-purple-400" />
+              <Input
+                placeholder="Filter by location (city, state, ZIP, country)..."
+                value={locationFilter}
+                onChange={(e) => setLocationFilter(e.target.value)}
+                className="flex-1 rounded-xl border-purple-300 focus:border-purple-500" />
+              {locationFilter && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setLocationFilter('')}
                   className="text-slate-500">
                   Clear
                 </Button>
@@ -334,10 +440,18 @@ export default function OnlineMembers() {
                     <Button
                       onClick={() => handleChat(profile.user_email)}
                       disabled={profile.isBlocked}
-                      className="flex-1 bg-gradient-to-r from-violet-600 to-purple-600 hover:from-violet-700 hover:to-purple-700 text-white gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                      className="flex-1 bg-gradient-to-r from-violet-600 to-purple-600 hover:from-violet-700 hover:to-purple-700 text-white gap-2 disabled:opacity-50 disabled:cursor-not-allowed relative"
                     >
                       <MessageCircle className="w-4 h-4" />
                       Chat
+                      {(() => {
+                        const count = unreadMessages.filter(m => m.sender_email === profile.user_email).length;
+                        return count > 0 ? (
+                          <span className="absolute -top-2 -right-2 min-w-[20px] h-[20px] flex items-center justify-center rounded-full bg-red-500 text-white text-[10px] font-bold px-1 leading-none shadow">
+                            {count > 99 ? '99+' : count}
+                          </span>
+                        ) : null;
+                      })()}
                     </Button>
                     {/* <BlockButton 
                       targetUserEmail={profile.user_email} 

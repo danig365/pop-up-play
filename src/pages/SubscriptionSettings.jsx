@@ -7,31 +7,24 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
-import { Link } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { createPageUrl } from '@/utils';
 import { toast } from 'sonner';
 
 export default function SubscriptionSettings() {
+  const navigate = useNavigate();
   const [user, setUser] = useState(null);
-  const [backUrl, setBackUrl] = useState(createPageUrl('Dashboard'));
   const [formData, setFormData] = useState({
     plan_name: 'Premium',
     description: '',
     monthly_price: 0,
     annual_price: 0,
-    stripe_price_id: '',
+    paypal_plan_id: '',
     currency: 'USD',
     features: []
   });
   const queryClient = useQueryClient();
 
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const fromParam = params.get('from');
-    if (fromParam === 'dashboard') {
-      setBackUrl(createPageUrl('Dashboard'));
-    }
-  }, []);
 
   useEffect(() => {
     const loadUser = async () => {
@@ -69,9 +62,12 @@ export default function SubscriptionSettings() {
         description: settings.description || '',
         monthly_price: settings.monthly_price || 0,
         annual_price: settings.annual_price || 0,
-        stripe_price_id: settings.stripe_price_id || '',
+        paypal_plan_id: settings.paypal_plan_id || settings.stripe_price_id || '',
         currency: settings.currency || 'USD',
-        features: settings.features || []
+        features: settings.features || [],
+        subscription_enabled: settings.subscription_enabled || false,
+        free_trial_enabled: settings.free_trial_enabled || false,
+        trial_days: settings.trial_days || 30,
       });
     }
   }, [settings]);
@@ -81,10 +77,14 @@ export default function SubscriptionSettings() {
    */
   const saveMutation = useMutation({
     mutationFn: async (data) => {
+      const payload = {
+        ...data,
+        stripe_price_id: data.paypal_plan_id || '',
+      };
       if (settings) {
-        return base44.entities.SubscriptionSettings.update(settings.id, data);
+        return base44.entities.SubscriptionSettings.update(settings.id, payload);
       } else {
-        return base44.entities.SubscriptionSettings.create(data);
+        return base44.entities.SubscriptionSettings.create(payload);
       }
     },
     onSuccess: () => {
@@ -103,6 +103,10 @@ export default function SubscriptionSettings() {
       toast.error('Please fill in all required fields (Plan Name, Monthly Price)');
       return;
     }
+    if (formData.subscription_enabled && !String(formData.paypal_plan_id || '').trim()) {
+      toast.error('Please provide a PayPal Plan ID before enabling subscriptions');
+      return;
+    }
     saveMutation.mutate(formData);
   };
 
@@ -118,11 +122,14 @@ export default function SubscriptionSettings() {
     <div className="min-h-screen bg-gradient-to-br from-violet-50 via-white to-rose-50 pb-20">
       <header className="sticky top-0 z-50 bg-white/80 backdrop-blur-lg border-b border-slate-100">
         <div className="max-w-2xl mx-auto px-4 py-4 flex items-center justify-between">
-          <Link to={backUrl}>
-            <Button variant="ghost" size="icon" className="rounded-full">
-              <ArrowLeft className="w-5 h-5" />
-            </Button>
-          </Link>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="rounded-full"
+            onClick={() => navigate(-1)}
+          >
+            <ArrowLeft className="w-5 h-5" />
+          </Button>
           <h1 className="text-lg font-semibold text-slate-800">Subscription Settings</h1>
           <Button
             onClick={handleSave}
@@ -217,20 +224,20 @@ export default function SubscriptionSettings() {
             </div>
 
             <div>
-              <Label htmlFor="stripe_price_id" className="text-slate-600">
-                Stripe Price ID *
+              <Label htmlFor="paypal_plan_id" className="text-slate-600">
+                PayPal Plan ID *
               </Label>
               <Input
-                id="stripe_price_id"
-                value={formData.stripe_price_id}
+                id="paypal_plan_id"
+                value={formData.paypal_plan_id}
                 onChange={(e) =>
-                  setFormData((prev) => ({ ...prev, stripe_price_id: e.target.value }))
+                  setFormData((prev) => ({ ...prev, paypal_plan_id: e.target.value }))
                 }
-                placeholder="price_1234567890"
+                placeholder="P-XXXXXXXXXXXX"
                 className="mt-1 rounded-xl border-slate-200"
               />
               <p className="text-xs text-slate-500 mt-1">
-                For development: Use mock IDs like "price_dev_test". For production: Create a recurring price in your Stripe Dashboard
+                Use a PayPal Billing Plan ID from your PayPal account for recurring subscriptions.
               </p>
             </div>
 
@@ -288,10 +295,10 @@ export default function SubscriptionSettings() {
           <h3 className="font-semibold text-blue-900 mb-2">Setup Instructions</h3>
           <ol className="text-sm text-blue-800 space-y-1 list-decimal list-inside">
             <li>Set your monthly price in USD</li>
-            <li>Enter a Stripe Price ID (for development, use mock IDs like "price_dev_test")</li>
+            <li>Enter a PayPal Plan ID (for recurring billing)</li>
             <li>Configure free trial settings if needed</li>
             <li>Enable subscription when ready</li>
-            <li>For production: Create recurring prices in your Stripe Dashboard and use the real Price IDs</li>
+            <li>For production: Keep PayPal merchant account active and unrestricted</li>
           </ol>
         </motion.div>
       </main>

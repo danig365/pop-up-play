@@ -4,24 +4,27 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ArrowLeft, Plus, Loader2, Volume2, VolumeX } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Link } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import { createPageUrl } from '@/utils';
 import ReelViewer from '@/components/reels/ReelViewer';
 import ReelUpload from '@/components/reels/ReelUpload';
 import { useSubscription } from '@/lib/SubscriptionContext';
 
 export default function Reels() {
+  const location = useLocation();
   const [user, setUser] = useState(null);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [showUpload, setShowUpload] = useState(false);
-  const [isMuted, setIsMuted] = useState(false);
-  const [touchStart, setTouchStart] = useState(0);
-  const [touchEnd, setTouchEnd] = useState(0);
+  const [isMuted, setIsMuted] = useState(true); // Start muted so autoplay works on all browsers
+  const touchStartRef = useRef(null);
+  const touchEndRef = useRef(null);
+  const swipingRef = useRef(false);
   const containerRef = useRef(null);
   const queryClient = useQueryClient();
   const { guardAction, hasAccess, paywallOpen, isLoading: subscriptionLoading } = useSubscription();
   const paywallTimerRef = useRef(null);
   const pendingReopenPaywallFeatureRef = useRef(null);
+  const backTarget = location.state?.from === 'Home' ? createPageUrl('Home') : createPageUrl('Menu');
 
   useEffect(() => {
     const loadUser = async () => {
@@ -91,54 +94,60 @@ export default function Reels() {
     return profiles.find(p => p.user_email === reel.user_email);
   };
 
-  // Handle swipe navigation
+  // Handle swipe navigation with debounce to prevent rapid-fire
   const handleTouchStart = (e) => {
-    setTouchStart(e.targetTouches[0].clientY);
+    if (swipingRef.current) return;
+    touchStartRef.current = e.targetTouches[0].clientY;
+    touchEndRef.current = null;
   };
 
   const handleTouchMove = (e) => {
-    setTouchEnd(e.targetTouches[0].clientY);
+    touchEndRef.current = e.targetTouches[0].clientY;
   };
 
   const handleTouchEnd = () => {
-    if (!touchStart || !touchEnd) return;
-    
-    const distance = touchStart - touchEnd;
+    if (swipingRef.current) return;
+    if (touchStartRef.current === null || touchEndRef.current === null) return;
+
+    const distance = touchStartRef.current - touchEndRef.current;
     const minSwipeDistance = 50;
 
-    if (distance > minSwipeDistance) {
-      // Swipe up - next reel
-      handleNextReel();
-    } else if (distance < -minSwipeDistance) {
-      // Swipe down - previous reel
-      handlePreviousReel();
+    if (Math.abs(distance) >= minSwipeDistance) {
+      swipingRef.current = true;
+      if (distance > 0) {
+        handleNextReel();
+      } else {
+        handlePreviousReel();
+      }
+      // Debounce: prevent another swipe for 400ms (matches animation)
+      setTimeout(() => { swipingRef.current = false; }, 400);
     }
 
-    setTouchStart(0);
-    setTouchEnd(0);
+    touchStartRef.current = null;
+    touchEndRef.current = null;
   };
 
-  // Handle wheel navigation (desktop)
+  // Handle wheel navigation (desktop) with debounce
+  const wheelCooldownRef = useRef(false);
   const handleWheel = (e) => {
     e.preventDefault();
-    
+    if (wheelCooldownRef.current) return;
+
+    wheelCooldownRef.current = true;
     if (e.deltaY > 0) {
       handleNextReel();
     } else if (e.deltaY < 0) {
       handlePreviousReel();
     }
+    setTimeout(() => { wheelCooldownRef.current = false; }, 400);
   };
 
   const handleNextReel = () => {
-    if (currentIndex < reels.length - 1) {
-      setCurrentIndex(prev => prev + 1);
-    }
+    setCurrentIndex(prev => Math.min(prev + 1, reels.length - 1));
   };
 
   const handlePreviousReel = () => {
-    if (currentIndex > 0) {
-      setCurrentIndex(prev => prev - 1);
-    }
+    setCurrentIndex(prev => Math.max(prev - 1, 0));
   };
 
   // Handle keyboard navigation
@@ -154,7 +163,7 @@ export default function Reels() {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [currentIndex, reels.length]);
+  }, [reels.length]);
 
   // Show paywall after 2 seconds for non-access users
   useEffect(() => {
@@ -196,7 +205,7 @@ export default function Reels() {
     return (
       <div className="h-screen bg-black flex flex-col items-center justify-center p-4">
         <div className="absolute top-4 left-4 z-50">
-          <Link to={createPageUrl('Menu')}>
+          <Link to={backTarget}>
             <Button variant="ghost" size="icon" className="rounded-full bg-white/20 hover:bg-white/30 text-white">
               <ArrowLeft className="w-5 h-5" />
             </Button>
@@ -244,7 +253,7 @@ export default function Reels() {
       <div className="absolute top-0 left-0 right-0 z-50 p-4 bg-gradient-to-b from-black/50 to-transparent">
         <div className="flex items-center justify-between">
           <div className="flex flex-col gap-2">
-            <Link to={createPageUrl('Menu')}>
+            <Link to={backTarget}>
               <Button variant="ghost" size="icon" className="rounded-full bg-white/20 hover:bg-white/30 text-white">
                 <ArrowLeft className="w-5 h-5" />
               </Button>

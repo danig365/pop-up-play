@@ -174,30 +174,28 @@ export default function About() {
             </div> :
 
           <div className="aspect-video bg-gradient-to-br from-violet-100 to-rose-100 flex items-center justify-center">
-              {!isAdmin ? (
-                <video
-                  src="/video.mp4"
-                  controls
-                  className="w-full h-full object-cover bg-slate-900"
-                  playsInline>
-                  Your browser does not support the video tag.
-                </video>
-              ) : (
-                <div className="text-center p-8">
-                  <div className="w-20 h-20 mx-auto mb-4 rounded-full bg-white/80 flex items-center justify-center">
-                    <Upload className="w-10 h-10 text-violet-400" />
-                  </div>
-                  <h3 className="text-lg font-semibold text-slate-700 mb-2">
-                    No video uploaded yet
-                  </h3>
-                  <p className="text-sm text-slate-500">
-                    Upload a video to introduce Pop Up Play to users
-                  </p>
-                </div>
-              )}
+              <video
+                src="/video.mp4"
+                controls
+                className="w-full h-full object-cover bg-slate-900"
+                playsInline>
+                Your browser does not support the video tag.
+              </video>
             </div>
           }
         </motion.div>
+
+        {!currentVideo && isAdmin && (
+          <motion.div
+            className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-4"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+          >
+            <p className="text-sm text-amber-800">
+              No About video has been uploaded yet. You are currently seeing the default fallback video shown to users.
+            </p>
+          </motion.div>
+        )}
 
         {/* Admin Upload Section */}
         {isAdmin &&

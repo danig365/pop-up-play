@@ -29,9 +29,10 @@ pop-up-play-db     Up (healthy) 0.0.0.0:5432->5432/tcp
 Located at: `/root/pop-up-play/.env`
 
 **Important:** Update these values before going to production:
-- `STRIPE_PUBLIC_KEY` - Add your Stripe public key
-- `STRIPE_SECRET_KEY` - Add your Stripe secret key
-- `STRIPE_WEBHOOK_SECRET` - Add your webhook secret
+- `PAYPAL_CLIENT_ID` - Add your PayPal client ID
+- `PAYPAL_CLIENT_SECRET` - Add your PayPal client secret
+- `PAYPAL_MODE` - Set to `sandbox` for testing or `live` for production
+- `PAYPAL_WEBHOOK_ID` - Add your PayPal webhook ID for signature verification
 - `EMAIL_HOST_USER` - Add your email address
 - `EMAIL_HOST_PASSWORD` - Add your app password
 - `JWT_SECRET` - Change to a strong random secret
@@ -121,7 +122,7 @@ docker-compose exec -T postgres psql -U popupapp popup_play_db < backup.sql
 
 ## 🔐 Security Checklist
 
-- [ ] Update `.env` with real Stripe keys
+- [ ] Update `.env` with real PayPal API credentials
 - [ ] Update `.env` with real email credentials
 - [ ] Change JWT_SECRET to a strong random value
 - [ ] Change database password (currently: popup2024)
@@ -181,7 +182,7 @@ sudo systemctl restart nginx
 ## 📋 Next Steps
 
 1. **Update sensitive credentials in `.env`:**
-   - Stripe API keys
+   - PayPal API credentials
    - Email credentials
    - JWT secret
    - Database password

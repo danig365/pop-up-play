@@ -1,5 +1,5 @@
 import React from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { createPageUrl } from '@/utils';
 import { useSubscription } from '@/lib/SubscriptionContext';
 import { Lock, CreditCard, Key, X, Sparkles, ArrowLeft } from 'lucide-react';
@@ -8,12 +8,18 @@ import { Button } from '@/components/ui/button';
 
 export default function PaywallModal() {
   const { paywallOpen, paywallFeature, paywallReturnTo, closePaywall } = useSubscription();
+  const location = useLocation();
   const navigate = useNavigate();
-  const isReelsPaywall = /reels/i.test(paywallFeature || '');
+  const fallbackReturnTo = paywallReturnTo || `${window.location.pathname}${window.location.search || ''}`;
+  const isProfilesBrowsePagePaywall = /\/(AllProfiles|OnlineMembers)(\?|$)/.test(fallbackReturnTo);
+  const isMenuPagePaywall =
+    !isProfilesBrowsePagePaywall &&
+    /reels|messages|profiles|video calls/i.test(paywallFeature || '');
+  const isReelsFromHomePaywall =
+    location.pathname === createPageUrl('Reels') && location.state?.from === 'Home';
 
   const getReturnToWithReopen = () => {
-    const fallbackReturnTo = paywallReturnTo || `${window.location.pathname}${window.location.search || ''}`;
-    if (!isReelsPaywall) return fallbackReturnTo;
+    if (!isMenuPagePaywall) return fallbackReturnTo;
 
     const [path, search = ''] = fallbackReturnTo.split('?');
     const params = new URLSearchParams(search);
@@ -40,7 +46,7 @@ export default function PaywallModal() {
 
   const handleBackToMenu = () => {
     closePaywall();
-    navigate(createPageUrl('Menu'));
+    navigate(isReelsFromHomePaywall ? createPageUrl('Home') : createPageUrl('Menu'));
   };
 
   return (
@@ -67,7 +73,7 @@ export default function PaywallModal() {
             <div className="bg-white rounded-3xl shadow-2xl max-w-sm w-full overflow-hidden">
               {/* Header gradient */}
               <div className="bg-gradient-to-br from-violet-600 via-purple-600 to-indigo-700 px-6 pt-8 pb-10 text-center relative">
-                {isReelsPaywall ?
+                {isMenuPagePaywall ?
                 <button
                   onClick={handleBackToMenu}
                   className="absolute top-4 right-4 text-white/70 hover:text-white transition-colors"
@@ -148,7 +154,7 @@ export default function PaywallModal() {
                 </Button>
 
                 <button
-                  onClick={closePaywall}
+                  onClick={isMenuPagePaywall ? handleBackToMenu : closePaywall}
                   className="w-full text-center text-xs text-slate-400 hover:text-slate-600 transition-colors py-1"
                 >
                   Maybe later

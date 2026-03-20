@@ -1,10 +1,9 @@
 import React, { useState } from 'react';
 import { motion } from 'framer-motion';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { createPageUrl } from '@/utils';
 import VideoModal from '@/components/popup/VideoModal';
 
-const logoImage = new URL('../assets/logo.png', import.meta.url).href;
 const bgImage = new URL('../assets/WhatsApp Image 2026-02-26 at 7.48.18 AM.jpeg', import.meta.url).href;
 
 function PlayButton({ className = '', size = 80, onClick }) {
@@ -84,16 +83,9 @@ export default function Landing() {
           >
             {/* Age gate card */}
             <div
-              className="rounded-3xl px-8 py-10 text-center"
-              style={{ background: 'rgba(0, 0, 0, 0.15)', backdropFilter: 'blur(8px)', WebkitBackdropFilter: 'blur(8px)' }}
+              className="rounded-3xl px-8 py-10 text-center border-2 border-white/70"
+              style={{ background: 'rgba(0, 0, 0, 0.15)' }}
             >
-              <div className="flex justify-center mb-4">
-                <img
-                  src={logoImage}
-                  alt="Pop-Up Play"
-                  className="h-14 w-auto object-contain"
-                />
-              </div>
 
               <h1 className="text-3xl lg:text-4xl font-bold text-white mb-8 leading-tight">
                 Are You Over 18 Years Of Age?
@@ -147,16 +139,9 @@ export default function Landing() {
         >
           {/* Age gate card */}
           <div
-            className="rounded-2xl px-5 py-7 text-center"
-            style={{ background: 'rgba(0, 0, 0, 0.15)', backdropFilter: 'blur(8px)', WebkitBackdropFilter: 'blur(8px)' }}
+            className="rounded-2xl px-5 py-7 text-center border-2 border-white/70"
+            style={{ background: 'rgba(0, 0, 0, 0.15)' }}
           >
-            <div className="flex justify-center mb-3">
-              <img
-                src={logoImage}
-                alt="Pop-Up Play"
-                className="h-10 w-auto object-contain"
-              />
-            </div>
 
             <h1 className="text-xl font-bold text-white mb-5 leading-tight">
               Are You Over 18 Years Of Age?
@@ -191,6 +176,11 @@ export default function Landing() {
           <p className="mt-4 text-white text-lg font-medium leading-relaxed text-center px-2">
             Connect and play with couples, singles, and alternative lifestyle lovers—right now, not tomorrow, not next week but right now.
           </p>
+
+          {/* Privacy Policy Link */}
+          <Link to="/PrivacyPolicy" className="mt-4 text-white/70 text-sm underline hover:text-white transition">
+            Privacy Policy
+          </Link>
         </motion.div>
       </div>
 

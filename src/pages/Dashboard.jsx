@@ -128,7 +128,7 @@ export default function Dashboard() {
             </div>
             <div className="flex-1">
               <h2 className="text-xl font-bold text-slate-800">
-                {myProfile?.display_name || user.full_name || 'Anonymous'}
+                {myProfile?.display_name || user.name || 'Anonymous'}
               </h2>
               <p className="text-sm text-slate-500">{user.email}</p>
               {myProfile?.current_city &&
