@@ -1,5 +1,6 @@
 import About from './pages/About';
 import AccessCodeManager from './pages/AccessCodeManager';
+import Contact from './pages/Contact';
 import AllProfiles from './pages/AllProfiles';
 import BlockedUsers from './pages/BlockedUsers';
 import Broadcast from './pages/Broadcast';
@@ -31,6 +32,7 @@ export const PAGES = {
     "BlockedUsers": BlockedUsers,
     "Broadcast": Broadcast,
     "Chat": Chat,
+    "Contact": Contact,
     "Dashboard": Dashboard,
     "EnterAccessCode": EnterAccessCode,
     "ForgotPassword": ForgotPassword,

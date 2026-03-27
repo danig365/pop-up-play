@@ -2091,6 +2091,34 @@ app.delete('/api/entities/:table/:id', authenticateUser, async (req, res) => {
   }
 });
 
+// DELETE /api/account/delete - Self-delete: user deletes their own account and ALL related data
+app.delete('/api/account/delete', authenticateUser, async (req, res) => {
+  try {
+    const email = req.authenticatedUser.email;
+
+    // Delete in order (foreign key constraints use CASCADE but let's be explicit)
+    await pool.query('DELETE FROM "VideoSignal" WHERE from_email = $1 OR to_email = $1', [email]);
+    await pool.query('DELETE FROM "Message" WHERE sender_email = $1 OR receiver_email = $1', [email]);
+    await pool.query('DELETE FROM "BlockedUser" WHERE blocker_email = $1 OR blocked_email = $1', [email]);
+    await pool.query('DELETE FROM "UserSession" WHERE user_email = $1', [email]);
+    await pool.query('DELETE FROM "Reel" WHERE user_email = $1', [email]);
+    await pool.query('DELETE FROM "ProfileVideo" WHERE user_email = $1', [email]);
+    await pool.query('DELETE FROM "UserSubscription" WHERE user_email = $1', [email]);
+    await pool.query('DELETE FROM "UserProfile" WHERE user_email = $1', [email]);
+    const deleteResult = await pool.query('DELETE FROM "User" WHERE email = $1 RETURNING *', [email]);
+
+    if (deleteResult.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    console.log(`🗑️ [SELF-DELETE] User ${email} deleted their account and all related data`);
+    res.json({ success: true, deleted: deleteResult.rows[0] });
+  } catch (error) {
+    console.error('❌ [SELF-DELETE] Error deleting account:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // DELETE /api/admin/user/:email - Admin-only: delete a user and ALL related data
 app.delete('/api/admin/user/:email', authenticateUser, async (req, res) => {
   try {
@@ -2124,6 +2152,62 @@ app.delete('/api/admin/user/:email', authenticateUser, async (req, res) => {
   }
 });
 
+// ============ Contact Form ============
+
+app.post('/api/contact', async (req, res) => {
+  try {
+    const { name, email, subject, message } = req.body;
+
+    if (!name || !email || !message) {
+      return res.status(400).json({ error: 'Name, email, and message are required' });
+    }
+
+    // Send email to admin
+    const adminEmail = process.env.CONTACT_FORM_TO || process.env.EMAIL_FROM || 'popupplay.help@gmail.com';
+
+    const mailOptions = {
+      from: EMAIL_FROM,
+      to: adminEmail,
+      replyTo: email,
+      subject: `[Pop Up Play Contact] ${subject || 'New message'} — from ${name}`,
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 640px; margin: 0 auto;">
+          <div style="background: linear-gradient(135deg, #8b5cf6 0%, #06b6d4 100%); padding: 20px; border-radius: 12px 12px 0 0;">
+            <h1 style="color: #fff; margin: 0; font-size: 22px;">📬 New Contact Form Submission</h1>
+          </div>
+          <div style="background: #fff; padding: 24px; border: 1px solid #e2e8f0; border-radius: 0 0 12px 12px;">
+            <table style="width: 100%; border-collapse: collapse;">
+              <tr>
+                <td style="padding: 8px 12px; font-weight: bold; color: #475569; width: 90px;">Name:</td>
+                <td style="padding: 8px 12px; color: #1e293b;">${name}</td>
+              </tr>
+              <tr>
+                <td style="padding: 8px 12px; font-weight: bold; color: #475569;">Email:</td>
+                <td style="padding: 8px 12px;"><a href="mailto:${email}" style="color: #8b5cf6;">${email}</a></td>
+              </tr>
+              ${subject ? `<tr><td style="padding: 8px 12px; font-weight: bold; color: #475569;">Subject:</td><td style="padding: 8px 12px; color: #1e293b;">${subject}</td></tr>` : ''}
+            </table>
+            <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 16px 0;">
+            <div style="background: #f8fafc; padding: 16px; border-radius: 8px; border-left: 4px solid #8b5cf6;">
+              <p style="margin: 0 0 4px; font-weight: bold; color: #475569; font-size: 13px;">Message:</p>
+              <p style="margin: 0; color: #1e293b; line-height: 1.6; white-space: pre-wrap;">${message}</p>
+            </div>
+            <p style="margin-top: 20px; color: #94a3b8; font-size: 12px;">Sent from the Pop Up Play contact form on ${new Date().toLocaleString()}</p>
+          </div>
+        </div>
+      `,
+    };
+
+    await transporter.sendMail(mailOptions);
+    console.log(`✅ [Contact] Message from ${email} sent to ${adminEmail}`);
+
+    res.json({ success: true, message: 'Message sent successfully' });
+  } catch (error) {
+    console.error('❌ [Contact] Error:', error.message);
+    res.status(500).json({ error: 'Failed to send message. Please try again later.' });
+  }
+});
+
 // ============ Health Check ============
 
 app.get('/api/health', (req, res) => {
@@ -2149,10 +2233,11 @@ app.post('/api/broadcast/send', authenticateUser, requireAdmin, async (req, res)
     }
 
     // Get all users with their email notification preferences
+    // INNER JOIN ensures we only include users who still have a profile (filters out deleted accounts)
     const usersResult = await pool.query(
       `SELECT u.email, COALESCE(p.email_notifications_enabled, true) as email_notifications_enabled
        FROM "User" u
-       LEFT JOIN "UserProfile" p ON u.email = p.user_email
+       INNER JOIN "UserProfile" p ON u.email = p.user_email
        WHERE u.email != $1`,
       [adminEmail]
     );

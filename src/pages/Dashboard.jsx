@@ -25,9 +25,14 @@ import {
   AlertDialogTrigger } from
 '@/components/ui/alert-dialog';
 import { format } from 'date-fns';
+import { getLocationPermissionState, isLocationEnabled, requestCurrentLocation, setLocationEnabled } from '@/lib/locationPermission';
 
 export default function Dashboard() {
   const [user, setUser] = useState(null);
+  const [locationEnabled, setLocationEnabledState] = useState(() => isLocationEnabled());
+  const [locationPermission, setLocationPermission] = useState('unknown');
+  const [locationLoading, setLocationLoading] = useState(false);
+  const [showLocationHelp, setShowLocationHelp] = useState(false);
   const queryClient = useQueryClient();
 
   useEffect(() => {
@@ -42,6 +47,15 @@ export default function Dashboard() {
     loadUser();
   }, []);
 
+  useEffect(() => {
+    const loadPermission = async () => {
+      const state = await getLocationPermissionState();
+      setLocationPermission(state);
+    };
+
+    loadPermission();
+  }, []);
+
   const { data: myProfile, isLoading } = useQuery({
     queryKey: ['myProfile', user?.email],
     queryFn: async () => {
@@ -53,6 +67,88 @@ export default function Dashboard() {
   });
 
 
+
+  const getLocationStatusText = () => {
+    if (!locationEnabled) {
+      return 'Disabled in app';
+    }
+
+    if (locationPermission === 'granted') {
+      return 'Allowed in browser';
+    }
+
+    if (locationPermission === 'denied') {
+      return 'Blocked in browser';
+    }
+
+    if (locationPermission === 'prompt') {
+      return 'Will ask when needed';
+    }
+
+    if (locationPermission === 'unsupported') {
+      return 'Not supported in this browser';
+    }
+
+    return 'Permission state unknown';
+  };
+
+  const handleLocationToggle = async () => {
+    if (locationEnabled) {
+      setLocationLoading(true);
+      try {
+        if (myProfile?.id && myProfile?.is_popped_up) {
+          await base44.entities.UserProfile.update(myProfile.id, {
+            is_popped_up: false,
+            popup_message: ''
+          });
+          queryClient.invalidateQueries({ queryKey: ['myProfile'] });
+          queryClient.invalidateQueries({ queryKey: ['activeUsers'] });
+        }
+
+        setLocationEnabled(false);
+        setLocationEnabledState(false);
+      } catch (error) {
+        console.error('❌ [Dashboard] Failed to disable location:', error);
+      } finally {
+        setLocationLoading(false);
+      }
+      return;
+    }
+
+    setLocationLoading(true);
+    setLocationEnabled(true);
+    setLocationEnabledState(true);
+
+    try {
+      await requestCurrentLocation();
+    } catch (error) {
+      console.error('❌ [Dashboard] Location enable failed:', error);
+    } finally {
+      const permissionState = await getLocationPermissionState();
+      setLocationPermission(permissionState);
+      setLocationLoading(false);
+    }
+  };
+
+  const getLocationHelpText = () => {
+    if (typeof navigator === 'undefined') {
+      return 'Open your browser settings and allow location access for this site, then return and tap Enable again.';
+    }
+
+    const userAgent = navigator.userAgent || '';
+    const isIOS = /iPhone|iPad|iPod/i.test(userAgent);
+    const isAndroid = /Android/i.test(userAgent);
+
+    if (isIOS) {
+      return 'iPhone/iPad: Settings > Safari > Location > Allow, then reopen this page and tap Enable.';
+    }
+
+    if (isAndroid) {
+      return 'Android: Browser site settings > Location > Allow, and make sure device Location is ON.';
+    }
+
+    return 'Desktop: Click the lock icon near the address bar, allow Location for this site, then refresh and tap Enable.';
+  };
 
   const handleLogout = async () => {
     console.log('🔄 [Dashboard.handleLogout] Logout button clicked');
@@ -197,6 +293,46 @@ export default function Dashboard() {
               </div>
             </div>
           </Link>
+
+          <div className="flex items-center gap-4 p-4 border-b border-slate-100">
+            <div className="w-10 h-10 rounded-full bg-violet-100 flex items-center justify-center">
+              <MapPin className="w-5 h-5 text-violet-600" />
+            </div>
+            <div className="flex-1">
+              <p className="font-medium text-slate-800">Location Access</p>
+              <p className="text-sm text-slate-500">{getLocationStatusText()}</p>
+            </div>
+            <Button
+              variant={locationEnabled ? 'outline' : 'default'}
+              onClick={handleLocationToggle}
+              disabled={locationLoading}
+              className={`min-w-[96px] ${
+                locationEnabled
+                  ? 'border-rose-300 text-rose-600 hover:bg-rose-50'
+                  : 'bg-violet-600 text-white hover:bg-violet-700'
+              }`}
+            >
+              {locationLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : locationEnabled ? 'Disable' : 'Enable'}
+            </Button>
+          </div>
+
+          {locationPermission === 'denied' &&
+          <div className="px-4 pb-4 border-b border-slate-100">
+              <div className="flex items-center justify-end mb-2">
+                <Button
+                variant="link"
+                className="h-auto p-0 text-sm text-violet-700"
+                onClick={() => setShowLocationHelp((prev) => !prev)}>
+                  {showLocationHelp ? 'Hide settings help' : 'How to enable in browser settings'}
+                </Button>
+              </div>
+              {showLocationHelp &&
+            <p className="text-xs text-slate-600 bg-slate-50 rounded-lg px-3 py-2">
+                  {getLocationHelpText()}
+                </p>
+            }
+            </div>
+          }
 
           {user?.role === 'admin' && (
             <Link to={createPageUrl('SubscriptionSettings') + '?from=dashboard'}>

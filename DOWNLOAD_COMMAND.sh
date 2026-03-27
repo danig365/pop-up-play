@@ -14,7 +14,7 @@
 SERVER_IP="192.168.1.100"              # 👈 CHANGE THIS to your server IP
 SSH_USER="root"                        # Change if different SSH user
 SSH_PORT="22"                          # Change if using custom SSH port
-BACKUP_FILE="popup_play_complete_backup_20260317_104606.tar.gz"
+BACKUP_FILE="popup_play_complete_backup_20260325_005654.tar.gz"
 DOWNLOAD_PATH="./"                     # Current directory by default
 
 

@@ -21,11 +21,14 @@ import { useNavigate } from 'react-router-dom';
 import ScrollControl from '@/components/map/ScrollControl';
 import NavigationMenu from '@/components/navigation/NavigationMenu';
 import { useSubscription } from '@/lib/SubscriptionContext';
+import { isLocationEnabled, requestCurrentLocation, setLocationEnabled } from '@/lib/locationPermission';
 
 export default function Home() {
   const [user, setUser] = useState(null);
   const [userLocation, setUserLocation] = useState(null);
   const [isUpdating, setIsUpdating] = useState(false);
+  const [locationEnabled, setLocationEnabledState] = useState(() => isLocationEnabled());
+  const [locationError, setLocationError] = useState('');
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const { guardAction } = useSubscription();
@@ -153,17 +156,56 @@ export default function Home() {
     }
 
     setIsUpdating(true);
-    const updateData = {
-      is_popped_up: isPopping,
-      popup_message: isPopping ? popupMessage : '',
-      last_location_update: isPopping ? new Date().toISOString() : myProfile?.last_location_update
-    };
-    // Mark that this user has popped up at least once (disables future auto-popup)
-    if (isPopping && !myProfile?.has_ever_popped_up) {
-      updateData.has_ever_popped_up = true;
+    setLocationError('');
+
+    try {
+      let latestLocation = null;
+
+      if (isPopping) {
+        if (!locationEnabled) {
+          const shouldEnableLocation = window.confirm('Location is disabled. Enable location access to pop up?');
+          if (!shouldEnableLocation) {
+            setLocationError('Location access is required to pop up. Please enable location and try again.');
+            return;
+          }
+
+          setLocationEnabled(true);
+          setLocationEnabledState(true);
+        }
+
+        latestLocation = await requestCurrentLocation();
+        setUserLocation(latestLocation);
+        if (!latestLocation?.latitude || !latestLocation?.longitude) {
+          setLocationError('Location access is required to pop up. Please enable location and try again.');
+          return;
+        }
+      }
+
+      const updateData = {
+        is_popped_up: isPopping,
+        popup_message: isPopping ? popupMessage : '',
+        last_location_update: isPopping ? new Date().toISOString() : myProfile?.last_location_update
+      };
+
+      if (isPopping) {
+        updateData.latitude = latestLocation.latitude;
+        updateData.longitude = latestLocation.longitude;
+        updateData.location = latestLocation.city;
+      }
+
+      // Mark that this user has popped up at least once (disables future auto-popup)
+      if (isPopping && !myProfile?.has_ever_popped_up) {
+        updateData.has_ever_popped_up = true;
+      }
+
+      await updateProfileMutation.mutateAsync(updateData);
+    } catch (error) {
+      if (isPopping) {
+        setLocationError(error?.userMessage || 'Location access is required to pop up. Please enable location and try again.');
+      }
+    } finally {
+      setIsUpdating(false);
     }
-    await updateProfileMutation.mutateAsync(updateData);
-    setIsUpdating(false);
   };
 
   if (!user || profileLoading) {
@@ -251,7 +293,10 @@ export default function Home() {
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.1 }}>
 
-            <LocationService onLocationUpdate={handleLocationUpdate} />
+            <LocationService
+              onLocationUpdate={handleLocationUpdate}
+              enabled={locationEnabled}
+            />
           </motion.div>
 
           {/* Map */}
@@ -315,6 +360,9 @@ export default function Home() {
                     disabled={!popupMessage.trim()} />
 
                     </div>
+                    {locationError ?
+                <p className="text-xs text-rose-600 text-center">{locationError}</p> :
+                null}
                   </div> :
 
               <div className="space-y-4">

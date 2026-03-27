@@ -1,17 +1,23 @@
 // @ts-nocheck
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { motion } from 'framer-motion';
 import { CheckCircle, ArrowRight, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Link, useLocation, useSearchParams } from 'react-router-dom';
 import { createPageUrl } from '@/utils';
 import { base44 } from '@/api/base44Client';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { getApiBaseUrl } from '@/lib/apiUrl';
+
+const API_BASE_URL = getApiBaseUrl();
 
 export default function SubscriptionSuccess() {
   const [searchParams] = useSearchParams();
   const [user, setUser] = useState(null);
+  const [activating, setActivating] = useState(false);
+  const activatedRef = useRef(false);
   const location = useLocation();
+  const queryClient = useQueryClient();
   const returnTo =
     location.state?.returnTo ||
     new URLSearchParams(location.search).get('returnTo') ||
@@ -29,6 +35,52 @@ export default function SubscriptionSuccess() {
     loadUser();
   }, []);
 
+  // Activate subscription from PayPal redirect (subscription_id in URL)
+  useEffect(() => {
+    if (!user || activatedRef.current) return;
+
+    const activate = async () => {
+      // PayPal may place params before or after the hash
+      const hashParts = window.location.hash.split('?');
+      const hashSearch = hashParts.length > 1 ? hashParts[1] : '';
+      const hashParams = new URLSearchParams(hashSearch);
+      const windowParams = new URLSearchParams(window.location.search);
+
+      const subscriptionId =
+        searchParams.get('subscription_id') ||
+        hashParams.get('subscription_id') ||
+        windowParams.get('subscription_id');
+
+      if (!subscriptionId) return;
+
+      activatedRef.current = true;
+      setActivating(true);
+
+      try {
+        const headers = { 'Content-Type': 'application/json' };
+        const token = localStorage.getItem('popup_auth_token');
+        if (token) headers.Authorization = `Bearer ${token}`;
+        if (user.email) headers['x-user-email'] = user.email;
+
+        await fetch(`${API_BASE_URL}/paypal/activate-subscription`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ subscriptionID: subscriptionId }),
+        });
+
+        // Refresh subscription data everywhere
+        queryClient.invalidateQueries({ queryKey: ['userSubscription'] });
+        queryClient.invalidateQueries({ queryKey: ['subscriptionStatus'] });
+      } catch (err) {
+        console.error('Error activating subscription after redirect:', err);
+      } finally {
+        setActivating(false);
+      }
+    };
+
+    activate();
+  }, [user, searchParams, queryClient]);
+
   // Check subscription status
   const { data: subscription, isLoading } = useQuery({
     queryKey: ['userSubscription', user?.email],
@@ -39,7 +91,7 @@ export default function SubscriptionSuccess() {
       });
       return subs[0] || null;
     },
-    enabled: !!user
+    enabled: !!user && !activating
   });
 
   useEffect(() => {

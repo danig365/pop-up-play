@@ -1,7 +1,7 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
 import { createPageUrl } from '@/utils';
-import { MessageCircle, Heart, Users, Info, ArrowLeft, Key, CreditCard, LogOut, Flame, Send, Settings, Shield } from 'lucide-react';
+import { MessageCircle, Heart, Users, Info, ArrowLeft, Key, CreditCard, LogOut, Flame, Send, Settings, Shield, Mail } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { motion } from 'framer-motion';
 import NotificationBadge from '@/components/notifications/NotificationBadge';
@@ -96,6 +96,13 @@ export default function Menu() {
       path: 'Pricing',
       color: 'bg-green-300',
       description: 'View membership plans'
+    },
+    {
+      label: 'Contact Us',
+      icon: Mail,
+      path: 'Contact',
+      color: 'bg-cyan-300',
+      description: 'Send us a message'
     },
     {
       label: 'Privacy Policy',

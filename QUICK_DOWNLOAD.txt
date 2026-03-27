@@ -3,38 +3,38 @@
 ╚══════════════════════════════════════════════════════════════════════════╝
 
 📦 BACKUP FILE CREATED:
-   popup_play_complete_backup_20260317_104606.tar.gz
-   Size: 34 MB
+  popup_play_complete_backup_20260325_005654.tar.gz
+  Size: 12 MB
    Location: /root/pop-up-play/backups/
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━ QUICK COPY-PASTE COMMANDS ━━━━━━━━━━━━━━━━━━
 
 💻 COPY-PASTE COMMAND (Replace <SERVER_IP> with your server IP):
 
-   scp root@<SERVER_IP>:/root/pop-up-play/backups/popup_play_complete_backup_20260317_104606.tar.gz .
+  scp root@<SERVER_IP>:/root/pop-up-play/backups/popup_play_complete_backup_20260325_005654.tar.gz .
 
 
 ━━━━━━━━━━━━━━━━━━━━ EXAMPLES WITH ACTUAL IP ADDRESS ━━━━━━━━━━━━━━━━━━
 
 Example 1 - If your server IP is 192.168.1.100:
-   scp root@192.168.1.100:/root/pop-up-play/backups/popup_play_complete_backup_20260317_104606.tar.gz .
+  scp root@192.168.1.100:/root/pop-up-play/backups/popup_play_complete_backup_20260325_005654.tar.gz .
 
 Example 2 - If using custom SSH port 2222:
-   scp -P 2222 root@192.168.1.100:/root/pop-up-play/backups/popup_play_complete_backup_20260317_104606.tar.gz .
+  scp -P 2222 root@192.168.1.100:/root/pop-up-play/backups/popup_play_complete_backup_20260325_005654.tar.gz .
 
 Example 3 - If using rsync with progress (better for large files):
-   rsync -avz --progress root@192.168.1.100:/root/pop-up-play/backups/popup_play_complete_backup_20260317_104606.tar.gz .
+  rsync -avz --progress root@192.168.1.100:/root/pop-up-play/backups/popup_play_complete_backup_20260325_005654.tar.gz .
 
 
 ━━━━━━━━━━━━━━━━━━━━ WHAT'S INSIDE THE BACKUP ━━━━━━━━━━━━━━━━━━━━━
 
 ✓ Database Backups:
-  - popup_play_db_20260317_104153.sql (69 KB)
-  - popup_play_db_20260317_104225.dump (46 KB)
+  - popup_play_db_20260325_005654.sql (161 KB)
+  - popup_play_db_20260325_005654.dump (68 KB)
   - Schema and seed backups
 
 ✓ Application Code:
-  - popup_play_code_20260317_104215.tar.gz (12 MB)
+  - popup_play_code_20260325_005654.tar.gz (12 MB)
   - Complete source code + configuration
 
 ✓ Docker Documentation:
@@ -50,10 +50,10 @@ Example 3 - If using rsync with progress (better for large files):
 ━━━━━━━━━━━━━ AFTER DOWNLOAD: EXTRACT AND VERIFY ━━━━━━━━━━━━━
 
 # Extract the archive
-tar -xzf popup_play_complete_backup_20260317_104606.tar.gz
+tar -xzf popup_play_complete_backup_20260325_005654.tar.gz
 
 # Verify integrity
-tar -tzf popup_play_complete_backup_20260317_104606.tar.gz | head -20
+tar -tzf popup_play_complete_backup_20260325_005654.tar.gz | head -20
 
 # View what's inside
 ls -la

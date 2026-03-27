@@ -87,19 +87,22 @@ export default function ChatConversation({
   const messageGroups = groupMessagesByDate(messages);
 
   return (
-    <div className="h-full flex flex-col bg-white">
+    <div className="flex h-full min-h-0 min-w-0 flex-col bg-white overflow-hidden">
       {/* Header */}
-      <div className="flex items-center gap-3 p-4 border-b border-slate-200 bg-white">
+      <div className="flex min-w-0 items-center gap-3 border-b border-slate-200 bg-white px-4 py-4 pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))]">
         <Button
           variant="ghost"
           size="icon"
           onClick={onBack}
-          className="md:hidden rounded-full"
+          className="md:hidden rounded-full flex-shrink-0"
         >
           <ArrowLeft className="w-5 h-5" />
           </Button>
 
-          <Link to={createPageUrl('Profile') + `?user=${otherUserEmail}&back=Chat&chatWith=${otherUserEmail}`}>
+          <Link
+            to={createPageUrl('Profile') + `?user=${otherUserEmail}&back=Chat&chatWith=${otherUserEmail}`}
+            className="flex-shrink-0"
+          >
             <img
               src={otherProfile.avatar_url || `data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect fill='%23ddd6fe' width='100' height='100'/%3E%3Ccircle cx='50' cy='38' r='18' fill='%23a78bfa'/%3E%3Cellipse cx='50' cy='80' rx='28' ry='22' fill='%23a78bfa'/%3E%3C/svg%3E`}
               alt={otherProfile.display_name}
@@ -107,9 +110,9 @@ export default function ChatConversation({
             />
           </Link>
         
-        <div className="flex-1">
+        <div className="flex-1 min-w-0">
           <Link to={createPageUrl('Profile') + `?user=${otherUserEmail}&back=Chat&chatWith=${otherUserEmail}`}>
-            <h2 className="font-semibold text-slate-800 hover:text-violet-600 cursor-pointer transition-colors">{otherProfile.display_name}</h2>
+            <h2 className="truncate font-semibold text-slate-800 hover:text-violet-600 cursor-pointer transition-colors">{otherProfile.display_name}</h2>
           </Link>
           {otherProfile.is_popped_up ? (
             <div className="flex items-center gap-1 text-xs text-green-600">
@@ -122,7 +125,7 @@ export default function ChatConversation({
         </div>
 
         {otherProfile.current_city && (
-          <div className="hidden sm:flex items-center gap-1 text-sm text-purple-600">
+          <div className="hidden max-w-[30vw] flex-shrink-0 items-center gap-1 truncate text-sm text-purple-600 sm:flex">
             <MapPin className="w-4 h-4" />
             {otherProfile.current_city}
           </div>
@@ -130,7 +133,7 @@ export default function ChatConversation({
       </div>
 
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto p-4 bg-slate-50">
+      <div className="flex-1 min-h-0 overflow-x-hidden overflow-y-auto bg-slate-50 px-4 py-4">
         {Object.keys(messageGroups).length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-center p-8">
             <div className="w-16 h-16 rounded-full bg-gradient-to-r from-violet-100 to-rose-100 flex items-center justify-center mb-4">
@@ -160,7 +163,7 @@ export default function ChatConversation({
                         initial={{ opacity: 0, y: 10 }}
                         animate={{ opacity: 1, y: 0 }}
                         className={cn(
-                          "flex gap-2 mb-2 group",
+                          "group mb-2 flex min-w-0 gap-2",
                           isOwn ? "justify-end" : "justify-start"
                         )}
                       >
@@ -173,23 +176,23 @@ export default function ChatConversation({
                             />
                           </Link>
                         )}
-                        {!isOwn && !showAvatar && <div className="w-8" />}
+                        {!isOwn && !showAvatar && <div className="w-8 flex-shrink-0" />}
                         
-                        <div className={cn("max-w-[70%] flex gap-2 items-start", isOwn ? "flex-row-reverse" : "flex-row")}>
-                          <div className={cn("flex flex-col relative", isOwn && "items-end")}>
+                        <div className={cn("flex min-w-0 w-fit max-w-[min(78%,28rem)] items-start gap-2 sm:max-w-[70%]", isOwn ? "flex-row-reverse" : "flex-row")}>
+                          <div className={cn("relative flex min-w-0 flex-col", isOwn && "items-end")}>
                             {message.attachment_url && (
                               <div className="relative group/media">
                                 {message.attachment_url.match(/\.(mp4|mov|avi|webm)$/i) ? (
                                   <video
                                     src={message.attachment_url}
                                     controls
-                                    className="rounded-xl mb-1 max-w-full shadow-sm max-h-64"
+                                    className="mb-1 max-h-[45vh] max-w-full rounded-xl bg-slate-100 object-contain shadow-sm"
                                   />
                                 ) : (
                                   <img
                                     src={message.attachment_url}
                                     alt="Attachment"
-                                    className="rounded-xl mb-1 max-w-full shadow-sm"
+                                    className="mb-1 max-h-[45vh] max-w-full rounded-xl bg-slate-100 object-contain shadow-sm"
                                   />
                                 )}
                                 <div className={cn(
@@ -231,13 +234,13 @@ export default function ChatConversation({
                             
                             <div
                               className={cn(
-                                "px-4 py-2 rounded-2xl shadow-sm",
+                                "max-w-full overflow-hidden rounded-2xl px-4 py-2 shadow-sm",
                                 isOwn
                                   ? "bg-gradient-to-r from-violet-600 to-purple-600 text-white"
                                   : "bg-white text-slate-800 border border-slate-200"
                               )}
                             >
-                              <p className="text-sm break-words">{message.content}</p>
+                              <p className="text-sm whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{message.content}</p>
                             </div>
                             
                             <span className="text-xs text-slate-400 mt-1 px-2">
@@ -287,8 +290,8 @@ export default function ChatConversation({
       </div>
 
       {/* Input */}
-      <div className="p-4 bg-white border-t border-slate-200">
-        <div className="flex items-end gap-2">
+      <div className="flex-shrink-0 border-t border-slate-200 bg-white px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-4 pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))]">
+        <div className="flex min-w-0 w-full items-end gap-2">
           <label className="flex-shrink-0 cursor-pointer">
             <input
               type="file"
@@ -315,7 +318,7 @@ export default function ChatConversation({
             onChange={(e) => setNewMessage(e.target.value)}
             onKeyPress={handleKeyPress}
             placeholder="Type a message..."
-            className="flex-1 rounded-full border-slate-200"
+            className="min-w-0 flex-1 rounded-full border-slate-200 bg-white"
             disabled={isSending}
           />
           

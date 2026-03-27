@@ -33,6 +33,7 @@ export const PAGE_TIERS = {
   Login: 'open',
   Signup: 'open',
   Dashboard: 'open',
+  Contact: 'open',
   PrivacyPolicy: 'open',
 
   // Tier 2 — Browse-only (actions blocked)

@@ -1,0 +1,11 @@
+]633;E;{   echo "=== Docker Volumes ==="\x3b   docker volume ls\x3b   echo\x3b   echo "=== Docker Networks ==="\x3b   docker network ls\x3b } > "backups/docker_volumes_${TS}.txt";05851ea9-7445-47ab-990d-6985b7f7d731]633;C=== Docker Volumes ===
+DRIVER    VOLUME NAME
+local     pop-up-play_postgres_data
+local     pop-up-play_uploads_data
+
+=== Docker Networks ===
+NETWORK ID     NAME                  DRIVER    SCOPE
+01f6585984d7   bridge                bridge    local
+a3cd93cd6205   host                  host      local
+28fdd79d3ee0   none                  null      local
+ec125c43beab   pop-up-play_default   bridge    local

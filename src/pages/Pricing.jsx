@@ -1,5 +1,5 @@
 // @ts-nocheck
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
@@ -16,13 +16,10 @@ const API_BASE_URL = getApiBaseUrl();
 export default function Pricing() {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [paypalLoaded, setPaypalLoaded] = useState(false);
-  const [paypalButtonReady, setPaypalButtonReady] = useState(false);
   const [paypalRestricted, setPaypalRestricted] = useState(false);
   const [paypalRestrictionMessage, setPaypalRestrictionMessage] = useState('');
   const [paypalDisplayError, setPaypalDisplayError] = useState('');
   const [showCancelConfirm, setShowCancelConfirm] = useState(false);
-  const paypalButtonRef = useRef(null);
   const navigate = useNavigate();
   const location = useLocation();
   const queryClient = useQueryClient();
@@ -45,6 +42,43 @@ export default function Pricing() {
     '';
   const backTarget = returnTo || createPageUrl('Menu');
 
+  const handlePayPalCheckout = async () => {
+    if (loading || !user || !settings || paypalRestricted) return;
+
+    setLoading(true);
+    setPaypalDisplayError('');
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/paypal/create-subscription`, {
+        method: 'POST',
+        headers: getAuthHeaders({
+          'Content-Type': 'application/json',
+        }),
+      });
+      const data = await response.json();
+
+      if (!response.ok || data.error) {
+        if (data?.code === 'PAYEE_ACCOUNT_RESTRICTED') {
+          setPaypalRestricted(true);
+          setPaypalRestrictionMessage(data.error || 'PayPal is temporarily unavailable. Please use an access code.');
+        }
+        throw new Error(data.error || 'Unable to start PayPal checkout');
+      }
+
+      if (data?.approvalUrl) {
+        window.location.assign(data.approvalUrl);
+        return;
+      }
+
+      throw new Error('PayPal approval link is unavailable. Please try again.');
+    } catch (error) {
+      console.error('PayPal checkout error:', error);
+      setPaypalDisplayError(error?.message || 'PayPal checkout could not be started. Please try again.');
+      toast.error(error?.message || 'PayPal checkout could not be started. Please try again.');
+      setLoading(false);
+    }
+  };
+
   useEffect(() => {
     const loadUser = async () => {
       try {
@@ -55,44 +89,6 @@ export default function Pricing() {
       }
     };
     loadUser();
-  }, []);
-
-  // Load PayPal SDK
-  useEffect(() => {
-    const loadPayPalScript = async () => {
-      try {
-        // Get PayPal client ID from backend
-        const response = await fetch(`${API_BASE_URL}/paypal/client-id`);
-        const { clientId } = await response.json();
-        
-        if (!clientId) {
-          console.error('PayPal client ID not configured');
-          return;
-        }
-
-        // Check if script already exists
-        if (document.querySelector('script[src*="paypal.com/sdk"]')) {
-          setPaypalLoaded(true);
-          return;
-        }
-
-        const script = document.createElement('script');
-        script.src = `https://www.paypal.com/sdk/js?client-id=${clientId}&vault=true&intent=subscription&currency=USD`;
-        script.async = true;
-        script.onload = () => {
-          console.log('✅ PayPal SDK loaded');
-          setPaypalLoaded(true);
-        };
-        script.onerror = () => {
-          console.error('❌ Failed to load PayPal SDK');
-        };
-        document.body.appendChild(script);
-      } catch (error) {
-        console.error('Error loading PayPal:', error);
-      }
-    };
-
-    loadPayPalScript();
   }, []);
 
   const { data: settings } = useQuery({
@@ -118,139 +114,6 @@ export default function Pricing() {
     },
     enabled: !!user
   });
-
-  // Initialize PayPal Buttons when SDK loads and user/settings are ready
-  useEffect(() => {
-    if (!paypalButtonRef.current) return;
-
-    // Show loading skeleton while dependencies load
-    if (!paypalLoaded || !user || !settings) {
-      setPaypalButtonReady(false);
-      paypalButtonRef.current.innerHTML = '<div class="h-12 bg-gradient-to-r from-slate-200 to-slate-100 rounded animate-pulse"></div>';
-      return;
-    }
-
-    if (subscription?.status === 'active' || paypalRestricted) {
-      setPaypalButtonReady(false);
-      return;
-    }
-
-    setPaypalDisplayError('');
-    setPaypalButtonReady(false);
-
-    // Clear existing buttons
-    paypalButtonRef.current.innerHTML = '';
-
-    // @ts-ignore - PayPal is loaded via script
-    if (window.paypal) {
-      // @ts-ignore
-      const buttons = window.paypal.Buttons({
-        fundingSource: window.paypal.FUNDING.PAYPAL, // Only show PayPal button
-        style: {
-          layout: 'vertical',
-          color: 'gold',
-          shape: 'rect',
-          label: 'paypal',
-          height: 50,
-        },
-        createSubscription: async () => {
-          setLoading(true);
-          try {
-            const response = await fetch(`${API_BASE_URL}/paypal/create-subscription`, {
-              method: 'POST',
-              headers: getAuthHeaders({
-                'Content-Type': 'application/json',
-              }),
-            });
-            const data = await response.json();
-            if (!response.ok || data.error) {
-              if (data?.code === 'PAYEE_ACCOUNT_RESTRICTED') {
-                setPaypalRestricted(true);
-                setPaypalRestrictionMessage(data.error || 'PayPal is temporarily unavailable. Please use an access code.');
-              }
-              if (data?.code === 'PAYER_CANNOT_PAY_SELF' || data?.code === 'PAYMENT_SOURCE_DECLINED_BY_PROCESSOR') {
-                setPaypalDisplayError('This PayPal account cannot be used for this payment. Please log in with a different buyer account.');
-              }
-              throw new Error(data.error || 'Failed to create payment');
-            }
-            return data.subscriptionID;
-          } catch (error) {
-            console.error('Create order error:', error);
-            toast.error(error?.message || 'Failed to create payment. Please try again.');
-            setLoading(false);
-            throw error;
-          }
-        },
-        onApprove: async (data) => {
-          try {
-            const response = await fetch(`${API_BASE_URL}/paypal/activate-subscription`, {
-              method: 'POST',
-              headers: getAuthHeaders({
-                'Content-Type': 'application/json',
-              }),
-              body: JSON.stringify({ subscriptionID: data.subscriptionID }),
-            });
-            const captureData = await response.json();
-            if (!response.ok || captureData.error) throw new Error(captureData.error || 'Payment verification failed');
-            
-            console.log('✅ Payment successful:', captureData);
-            toast.success('Payment successful! Welcome to Premium!');
-            refetchSubscription();
-            navigate(createPageUrl('SubscriptionSuccess'), {
-              state: { returnTo },
-            });
-          } catch (error) {
-            console.error('Capture error:', error);
-            toast.error(error?.message || 'Payment verification failed. Please contact support.');
-          } finally {
-            setLoading(false);
-          }
-        },
-        onCancel: () => {
-          setLoading(false);
-          toast.info('Payment cancelled');
-        },
-        onError: (err) => {
-          console.error('PayPal error:', err);
-          setLoading(false);
-          const rawMessage = String(
-            err?.message || err?.toString?.() || ''
-          ).toLowerCase();
-
-          if (
-            rawMessage.includes('associated with the merchant') ||
-            rawMessage.includes('different account') ||
-            rawMessage.includes('paying yourself') ||
-            rawMessage.includes('pay self')
-          ) {
-            setPaypalDisplayError('This PayPal account is linked to the merchant. Please log in with a different buyer account.');
-            toast.error('This PayPal account is the merchant account. Please log in with a different buyer account.');
-            return;
-          }
-
-          setPaypalDisplayError('Unable to load PayPal checkout for this account right now. Try another PayPal account or use an access code.');
-          toast.error('Payment error. Please try again.');
-        },
-      });
-
-      if (!buttons?.isEligible?.()) {
-        setPaypalButtonReady(false);
-        setPaypalDisplayError('PayPal checkout is not available for this account/session. Please log out of PayPal and retry with a different buyer account.');
-        return;
-      }
-
-      buttons
-        .render(paypalButtonRef.current)
-        .then(() => {
-          setPaypalButtonReady(true);
-        })
-        .catch((renderError) => {
-          console.error('PayPal render error:', renderError);
-          setPaypalButtonReady(false);
-          setPaypalDisplayError('PayPal checkout could not be displayed. Please retry, or use a different PayPal account.');
-        });
-    }
-  }, [paypalLoaded, user, settings, subscription, navigate, refetchSubscription, paypalRestricted]);
 
   // Cancel subscription mutation
   const cancelMutation = useMutation({
@@ -469,31 +332,43 @@ export default function Pricing() {
                 </div>
               ) : (
                 <div className="space-y-4">
-                  {/* PayPal Button Container */}
-                  <div className="min-h-[50px]">
-                    {paypalRestricted ? (
+                  {/* PayPal Checkout Button */}
+                  <div className="space-y-2">
+                    <button
+                      type="button"
+                      onClick={handlePayPalCheckout}
+                      disabled={!user || !settings || paypalRestricted || loading}
+                      className="flex h-[50px] w-full items-center justify-center rounded-md border border-[#d8a600] bg-[#ffc439] hover:bg-[#f0b930] active:bg-[#e0a820] transition-colors disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {loading ? (
+                        <Loader2 className="h-5 w-5 animate-spin text-[#003087]" />
+                      ) : (
+                        <>
+                          <span
+                            className="text-[31px] font-black italic leading-none text-[#003087]"
+                            style={{ fontFamily: 'Helvetica Neue, Arial, sans-serif' }}
+                          >
+                            Pay
+                          </span>
+                          <span
+                            className="text-[31px] font-black italic leading-none text-[#009cde]"
+                            style={{ fontFamily: 'Helvetica Neue, Arial, sans-serif' }}
+                          >
+                            Pal
+                          </span>
+                        </>
+                      )}
+                    </button>
+
+                    {paypalRestricted && (
                       <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
                         {paypalRestrictionMessage || 'PayPal is temporarily unavailable. Please use an access code.'}
                       </div>
-                    ) : paypalDisplayError ? (
+                    )}
+
+                    {!paypalRestricted && paypalDisplayError && (
                       <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">
                         {paypalDisplayError}
-                      </div>
-                    ) : (
-                      <div className="relative min-h-[50px]">
-                        <div
-                          ref={paypalButtonRef}
-                          className={`min-h-[50px] transition-opacity duration-200 ${paypalButtonReady ? 'opacity-100' : 'opacity-0'}`}
-                        />
-                        {!paypalButtonReady && (
-                          <button
-                            type="button"
-                            disabled
-                            className="absolute inset-0 w-full rounded-md border border-amber-300 bg-amber-300/90 text-base font-semibold text-slate-900 cursor-not-allowed"
-                          >
-                            PayPal
-                          </button>
-                        )}
                       </div>
                     )}
                   </div>

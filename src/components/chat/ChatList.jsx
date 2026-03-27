@@ -91,7 +91,7 @@ export default function ChatList({
   }
 
   return (
-    <div className="h-full overflow-y-auto">
+    <div className="h-full overflow-x-hidden overflow-y-auto">
       {sortedConversations.map((conversation) => {
         const otherProfile = getOtherUserProfile(conversation);
         const lastMessage = getLastMessage(conversation);
@@ -102,7 +102,7 @@ export default function ChatList({
         return (
           <motion.div
             key={conversation.otherUserEmail}
-            className="relative group"
+            className="group"
             whileHover={{ x: 4 }}
           >
             <button
@@ -123,16 +123,11 @@ export default function ChatList({
                 )}
               </div>
               
-              <div className="flex-1 text-left overflow-hidden">
-                <div className="flex items-center justify-between mb-1">
+              <div className="flex-1 min-w-0 text-left overflow-hidden">
+                <div className="flex items-center mb-1">
                   <h3 className="font-semibold text-slate-800 truncate">
                     {otherProfile.display_name}
                   </h3>
-                  {lastMessage && (
-                    <span className="text-xs text-slate-400 ml-2 flex-shrink-0">
-                      {format(new Date(lastMessage.created_date), 'MMM d')}
-                    </span>
-                  )}
                 </div>
                 
                 {lastMessage ? (
@@ -148,21 +143,32 @@ export default function ChatList({
                 )}
               </div>
 
-              {unreadCount > 0 && (
-                <div className="w-6 h-6 bg-violet-600 rounded-full flex items-center justify-center flex-shrink-0">
-                  <span className="text-xs font-bold text-white">{unreadCount}</span>
+              <div className="ml-2 w-16 flex flex-col items-end justify-between self-stretch">
+                <div className="flex items-center gap-1">
+                  {lastMessage && (
+                    <span className="text-xs text-slate-400 flex-shrink-0">
+                      {format(new Date(lastMessage.created_date), 'MMM d')}
+                    </span>
+                  )}
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={(e) => handleDeleteClick(e, conversation)}
+                    className="h-7 w-7 text-slate-400 hover:text-red-600"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </Button>
                 </div>
-              )}
+
+                {unreadCount > 0 ? (
+                  <div className="w-6 h-6 bg-violet-600 rounded-full flex items-center justify-center flex-shrink-0">
+                    <span className="text-xs font-bold text-white">{unreadCount}</span>
+                  </div>
+                ) : (
+                  <div className="h-6" />
+                )}
+              </div>
             </button>
-            
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={(e) => handleDeleteClick(e, conversation)}
-              className="absolute right-2 top-1/2 -translate-y-1/2 opacity-70 md:opacity-0 md:group-hover:opacity-100 transition-opacity text-slate-400 hover:text-red-600"
-            >
-              <Trash2 className="w-4 h-4" />
-            </Button>
           </motion.div>
         );
       })}

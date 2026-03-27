@@ -310,9 +310,20 @@ export default function Profile() {
 
   const deleteMutation = useMutation({
     mutationFn: async () => {
-      if (myProfile) {
-        await base44.entities.UserProfile.delete(myProfile.id);
+      const token = localStorage.getItem('popup_auth_token');
+      const res = await fetch(`${getApiBaseUrl()}/account/delete`, {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          ...(user?.email ? { 'x-user-email': user.email } : {}),
+        },
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || 'Failed to delete account');
       }
+      return res.json();
     },
     onSuccess: () => {
       toast.success('Account deleted successfully');
@@ -320,8 +331,8 @@ export default function Profile() {
         base44.auth.logout();
       }, 1000);
     },
-    onError: () => {
-      toast.error('Failed to delete account');
+    onError: (err) => {
+      toast.error(err.message || 'Failed to delete account');
     }
   });
 

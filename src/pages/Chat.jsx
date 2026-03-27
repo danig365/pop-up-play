@@ -209,10 +209,10 @@ export default function Chat() {
   ) : null;
 
   return (
-    <div className="h-screen bg-gradient-to-br from-violet-50 via-white to-rose-50 flex flex-col">
+    <div className="flex h-[100dvh] min-w-0 flex-col overflow-hidden bg-gradient-to-br from-violet-50 via-white to-rose-50">
       {/* Header */}
       <header className="bg-white/80 backdrop-blur-lg border-b border-slate-100 flex-shrink-0">
-        <div className="max-w-7xl mx-auto px-4 py-3 flex items-center gap-3">
+        <div className="mx-auto flex w-full max-w-7xl min-w-0 items-center gap-3 px-4 py-3 pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))]">
           <Link to={backUrl}>
             <Button variant="ghost" size="icon" className="rounded-full">
               <ArrowLeft className="w-5 h-5" />
@@ -224,14 +224,14 @@ export default function Chat() {
       </header>
 
       {/* Main Content */}
-      <main className="flex-1 overflow-hidden">
-        <div className="max-w-7xl mx-auto h-full">
-          <div className="grid md:grid-cols-[380px,1fr] h-full bg-white shadow-xl overflow-hidden">
+      <main className="flex-1 min-h-0 overflow-hidden">
+        <div className="mx-auto h-full min-h-0 w-full max-w-7xl min-w-0">
+          <div className="grid h-full min-h-0 min-w-0 overflow-hidden bg-white shadow-xl md:grid-cols-[380px,1fr]">
             {/* Chat List - Hidden on mobile when chat is selected */}
             <div className={`
               border-r border-slate-200 
               ${selectedConversation ? 'hidden md:block' : 'block'}
-              h-full overflow-hidden
+              h-full min-h-0 min-w-0 overflow-hidden
             `}>
               <ChatList
                 conversations={conversations}
@@ -247,7 +247,7 @@ export default function Chat() {
             {/* Conversation - Hidden on mobile when no chat selected */}
             <div className={`
               ${selectedConversation ? 'block' : 'hidden md:flex md:items-center md:justify-center'}
-              h-full
+              h-full min-h-0 min-w-0 overflow-hidden
             `}>
               {selectedConversation && otherProfile ?
               <ChatConversation

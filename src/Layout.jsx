@@ -1,47 +1,51 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Toaster } from 'sonner';
-import SessionManager from '@/components/auth/SessionManager';
 // InactivityManager removed — users stay popped up until they manually pop down
 import SubscriptionGate from '@/components/subscription/SubscriptionGate';
 import PaywallModal from '@/components/subscription/PaywallModal';
 import IncomingCallDetector from '@/components/IncomingCallDetector';
 import { PAGE_TIERS } from '@/lib/SubscriptionContext';
+import { useAuth } from '@/lib/AuthContext';
 import { base44 } from '@/api/base44Client';
 import { createPageUrl } from '@/utils';
 import { useLocation, useNavigate } from 'react-router-dom';
 
+function FullPageLoader() {
+  return (
+    <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+      <div className="w-8 h-8 border-4 border-slate-200 border-t-slate-800 rounded-full animate-spin" />
+    </div>
+  );
+}
+
 export default function Layout({ children, currentPageName }) {
-  const [userEmail, setUserEmail] = useState(null);
+  const { user } = useAuth();
+  const userEmail = user?.email || null;
   const [isProfileCheckLoading, setIsProfileCheckLoading] = useState(true);
   const [isProfileComplete, setIsProfileComplete] = useState(true);
+  const hasCompletedInitialProfileCheckRef = useRef(false);
   const location = useLocation();
   const navigate = useNavigate();
 
   useEffect(() => {
-    const loadUser = async () => {
-      try {
-        const user = await base44.auth.me();
-        setUserEmail(user?.email || null);
-      } catch (error) {
-        // User not logged in
-        setUserEmail(null);
-      }
-    };
-    loadUser();
-  }, []);
+    let isCancelled = false;
 
-  useEffect(() => {
     const checkProfileCompletion = async () => {
       if (!userEmail) {
+        hasCompletedInitialProfileCheckRef.current = false;
         setIsProfileCheckLoading(false);
         setIsProfileComplete(true);
         return;
       }
 
-      setIsProfileCheckLoading(true);
+      if (!hasCompletedInitialProfileCheckRef.current) {
+        setIsProfileCheckLoading(true);
+      }
 
       try {
         const profiles = await base44.entities.UserProfile.filter({ user_email: userEmail });
+        if (isCancelled) return;
+
         const profile = profiles[0] || null;
 
         const hasZip = Boolean(profile?.zip_code && profile.zip_code.trim());
@@ -52,13 +56,20 @@ export default function Layout({ children, currentPageName }) {
 
         setIsProfileComplete(hasZip && hasPicture);
       } catch (error) {
+        if (isCancelled) return;
         setIsProfileComplete(true);
       } finally {
+        if (isCancelled) return;
+        hasCompletedInitialProfileCheckRef.current = true;
         setIsProfileCheckLoading(false);
       }
     };
 
     checkProfileCompletion();
+
+    return () => {
+      isCancelled = true;
+    };
   }, [userEmail, location.pathname, location.search]);
 
   useEffect(() => {
@@ -89,8 +100,8 @@ export default function Layout({ children, currentPageName }) {
   const pageTier = PAGE_TIERS[currentPageName] || 'gated';
   const shouldCheckSubscription = pageTier === 'gated';
 
-  if (userEmail && isProfileCheckLoading) {
-    return <div className="min-h-screen bg-slate-50" />;
+  if (userEmail && isProfileCheckLoading && !hasCompletedInitialProfileCheckRef.current) {
+    return <FullPageLoader />;
   }
 
   if (userEmail && !isProfileComplete) {
@@ -101,13 +112,12 @@ export default function Layout({ children, currentPageName }) {
       (!viewingUserEmail || viewingUserEmail === userEmail);
 
     if (!onOwnProfile) {
-      return <div className="min-h-screen bg-slate-50" />;
+      return <FullPageLoader />;
     }
   }
   
   const content = (
     <div className="min-h-screen bg-slate-50">
-      <SessionManager />
       {/* InactivityManager removed — no auto pop-down */}
       {currentPageName !== 'VideoCall' && <IncomingCallDetector user={{ email: userEmail }} />}
       <style>{`
