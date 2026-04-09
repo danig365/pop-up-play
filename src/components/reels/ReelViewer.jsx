@@ -6,7 +6,7 @@ import { Link } from 'react-router-dom';
 import { createPageUrl } from '@/utils';
 import { base44 } from '@/api/base44Client';
 
-export default function ReelViewer({ reel, profile, isActive, blocked = false, onToggleMute, isMuted, reelIndex }) {
+export default function ReelViewer({ reel, profile, isActive, blocked = false, onToggleMute, onForceMute, onForceUnmute, isMuted, reelIndex }) {
   const videoRef = useRef(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [viewCounted, setViewCounted] = useState(false);
@@ -52,16 +52,22 @@ export default function ReelViewer({ reel, profile, isActive, blocked = false, o
       // Reset to start when swiping to a new reel
       video.currentTime = 0;
 
-      // Attempt autoplay – browsers require muted for autoplay without user gesture
+      // Always attempt unmuted playback first — after any user gesture
+      // (swipe/tap) the browser allows unmuted autoplay even if the
+      // very first reel was force-muted.
+      video.muted = false;
       const playPromise = video.play();
       if (playPromise !== undefined) {
         playPromise
           .then(() => {
             setIsPlaying(true);
+            // Unmuted playback succeeded — sync parent state if it was muted
+            if (isMuted && onForceUnmute) onForceUnmute();
           })
           .catch(() => {
-            // Autoplay blocked – force mute and retry
+            // Autoplay blocked by browser – force mute and retry
             video.muted = true;
+            if (onForceMute) onForceMute();
             video.play().then(() => setIsPlaying(true)).catch(() => {});
           });
       }

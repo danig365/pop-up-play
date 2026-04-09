@@ -16,6 +16,7 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Link, useNavigate } from 'react-router-dom';
 import { createPageUrl } from '@/utils';
+import { getMissingRequiredProfileFields } from '@/lib/profileCompletion';
 import AvatarUpload from '@/components/profile/AvatarUpload';
 import PhotoGallery from '@/components/profile/PhotoGallery';
 import VideoGallery from '@/components/profile/VideoGallery';
@@ -300,10 +301,12 @@ export default function Profile() {
       await queryClient.invalidateQueries({ queryKey: ['viewingProfile'] });
       await queryClient.invalidateQueries({ queryKey: ['activeUsers'] });
       await queryClient.refetchQueries({ queryKey: ['myProfile', user?.email] });
+      window.dispatchEvent(new Event('profile:updated'));
       toast.success('Profile saved successfully!');
     },
     onError: (error) => {
-      toast.error('Failed to save profile: ' + (error.message || 'Unknown error'));
+      const backendError = error?.response?.data?.error;
+      toast.error('Failed to save profile: ' + (backendError || error.message || 'Unknown error'));
       console.error('Save error:', error);
     }
   });
@@ -389,8 +392,9 @@ export default function Profile() {
 
   const handleSave = () => {
     // Validate required fields
-    if (!formData.display_name || !formData.age || !formData.gender || !formData.interested_in || !formData.avatar_url || !formData.zip_code) {
-      toast.error('Please complete all required fields (Display Name, Age, Gender, Interested In, Profile Picture, and ZIP Code)');
+    const missingRequiredFields = getMissingRequiredProfileFields(formData);
+    if (missingRequiredFields.length > 0) {
+      toast.error(`Please complete all required fields: ${missingRequiredFields.join(', ')}`);
       return;
     }
     // Validate age requirement
@@ -958,9 +962,9 @@ export default function Profile() {
             </h2>
             <div className="flex items-center gap-4">
               <div className="flex-1">
-                <Label className="text-slate-700 font-medium">Email Notifications for Chat Messages</Label>
+                <Label className="text-slate-700 font-medium">Email Notifications</Label>
                 <p className="text-sm text-slate-600 mt-1">
-                  Receive email notifications when someone sends you a chat message
+                  Receive email notifications for chat messages and broadcast announcements from the admin
                 </p>
               </div>
               <label className="relative inline-flex items-center cursor-pointer">

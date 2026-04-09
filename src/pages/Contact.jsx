@@ -262,8 +262,8 @@ export default function Contact() {
           transition={{ delay: 0.3 }}
         >
           You can also reach us at{' '}
-          <a href="mailto:popupplay.help@gmail.com" className="text-violet-600 hover:underline">
-            popupplay.help@gmail.com
+          <a href="mailto:contact@popupplay.fun" className="text-violet-600 hover:underline">
+            contact@popupplay.fun
           </a>
         </motion.p>
       </main>

@@ -15,7 +15,7 @@ export default function Reels() {
   const [user, setUser] = useState(null);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [showUpload, setShowUpload] = useState(false);
-  const [isMuted, setIsMuted] = useState(true); // Start muted so autoplay works on all browsers
+  const [isMuted, setIsMuted] = useState(false); // Start with audio on; ReelViewer will auto-mute if browser blocks unmuted autoplay
   const touchStartRef = useRef(null);
   const touchEndRef = useRef(null);
   const swipingRef = useRef(false);
@@ -296,6 +296,8 @@ export default function Reels() {
                 profile={getProfileForReel(reels[currentIndex])}
                 isActive={true}
                 onToggleMute={() => setIsMuted(!isMuted)}
+                onForceMute={() => setIsMuted(true)}
+                onForceUnmute={() => setIsMuted(false)}
                 isMuted={isMuted}
                 reelIndex={currentIndex} />
             </motion.div>

@@ -218,6 +218,89 @@ function calculateDistanceMiles(lat1, lon1, lat2, lon2) {
   return R * c;
 }
 
+function hasNonEmptyText(value) {
+  return typeof value === 'string' ? value.trim().length > 0 : Boolean(value);
+}
+
+function hasAnyProfilePhoto(profile) {
+  if (!profile) return false;
+
+  const hasAvatar = hasNonEmptyText(profile.avatar_url);
+  const hasGalleryPhoto = Array.isArray(profile.photos) && profile.photos.some((item) => hasNonEmptyText(item));
+  return hasAvatar || hasGalleryPhoto;
+}
+
+function getMissingRequiredProfileFields(profile) {
+  const missing = [];
+
+  if (!hasNonEmptyText(profile?.display_name)) missing.push('display_name');
+  if (!hasNonEmptyText(profile?.zip_code)) missing.push('zip_code');
+  if (!hasNonEmptyText(profile?.gender)) missing.push('gender');
+  if (!hasNonEmptyText(profile?.interested_in)) missing.push('interested_in');
+
+  const age = Number(profile?.age);
+  if (!Number.isFinite(age) || age < 18) missing.push('age');
+
+  if (!hasAnyProfilePhoto(profile)) missing.push('profile_photo');
+
+  return missing;
+}
+
+function isRequiredProfileComplete(profile) {
+  return getMissingRequiredProfileFields(profile).length === 0;
+}
+
+async function ensureUserProfileExists(userEmail, displayName = '', avatarUrl = '') {
+  const existingProfile = await pool.query(
+    `SELECT id, user_email, display_name, age, gender, interested_in, zip_code, avatar_url, photos
+     FROM "UserProfile"
+     WHERE user_email = $1
+     LIMIT 1`,
+    [userEmail]
+  );
+
+  if (existingProfile.rows.length > 0) {
+    const profile = existingProfile.rows[0];
+    if (!hasNonEmptyText(profile.avatar_url) && hasNonEmptyText(avatarUrl)) {
+      const updated = await pool.query(
+        `UPDATE "UserProfile"
+         SET avatar_url = $1, updated_date = CURRENT_TIMESTAMP
+         WHERE id = $2
+         RETURNING id, user_email, display_name, age, gender, interested_in, zip_code, avatar_url, photos`,
+        [avatarUrl, profile.id]
+      );
+      return updated.rows[0] || profile;
+    }
+    return profile;
+  }
+
+  const createdProfile = await pool.query(
+    `INSERT INTO "UserProfile" (user_email, display_name, avatar_url)
+     VALUES ($1, $2, $3)
+     RETURNING id, user_email, display_name, age, gender, interested_in, zip_code, avatar_url, photos`,
+    [userEmail, displayName || userEmail.split('@')[0], avatarUrl || '']
+  );
+
+  return createdProfile.rows[0] || null;
+}
+
+async function getProfileCompletionState(userEmail) {
+  const profileResult = await pool.query(
+    `SELECT id, user_email, display_name, age, gender, interested_in, zip_code, avatar_url, photos
+     FROM "UserProfile"
+     WHERE user_email = $1
+     LIMIT 1`,
+    [userEmail]
+  );
+
+  const profile = profileResult.rows[0] || null;
+  return {
+    profile,
+    isComplete: isRequiredProfileComplete(profile),
+    missingFields: getMissingRequiredProfileFields(profile),
+  };
+}
+
 async function sendPopupProximityEmails(poppedProfile) {
   try {
     const lat = Number(poppedProfile.latitude);
@@ -679,7 +762,8 @@ async function authenticateUser(req, res, next) {
       const token = authHeader.slice(7);
       const decoded = verifyToken(token);
       if (decoded && decoded.email) {
-        const result = await pool.query('SELECT email, name, role FROM "User" WHERE email = $1', [decoded.email]);
+        const normalizedEmail = decoded.email.trim().toLowerCase();
+        const result = await pool.query('SELECT email, name, role FROM "User" WHERE email = $1', [normalizedEmail]);
         if (result.rows.length > 0) {
           req.authenticatedUser = result.rows[0];
           return next();
@@ -690,7 +774,7 @@ async function authenticateUser(req, res, next) {
     }
 
     // 2. Fallback: x-user-email header (backward compat, will be removed later)
-    const email = req.headers['x-user-email'];
+    const email = req.headers['x-user-email'] ? req.headers['x-user-email'].trim().toLowerCase() : '';
     if (!email) {
       return res.status(401).json({ error: 'Authentication required' });
     }
@@ -725,7 +809,8 @@ async function authenticateUserStrict(req, res, next) {
       return res.status(401).json({ error: 'Authentication failed: invalid or expired token' });
     }
 
-    const result = await pool.query('SELECT email, name, role FROM "User" WHERE email = $1', [decoded.email]);
+    const normalizedEmail = decoded.email.trim().toLowerCase();
+    const result = await pool.query('SELECT email, name, role FROM "User" WHERE email = $1', [normalizedEmail]);
     if (result.rows.length === 0) {
       return res.status(401).json({ error: 'Authentication failed: user not found' });
     }
@@ -929,13 +1014,13 @@ app.get('/api/auth/me', async (req, res) => {
     if (authHeader && authHeader.startsWith('Bearer ')) {
       const decoded = verifyToken(authHeader.slice(7));
       if (decoded && decoded.email) {
-        email = decoded.email;
+        email = decoded.email.trim().toLowerCase();
       } else {
         return res.status(401).json({ error: 'Invalid or expired token' });
       }
     } else {
       // Fallback to x-user-email for backward compat
-      email = req.headers['x-user-email'];
+      email = req.headers['x-user-email'] ? req.headers['x-user-email'].trim().toLowerCase() : '';
     }
 
     if (!email) {
@@ -948,7 +1033,21 @@ app.get('/api/auth/me', async (req, res) => {
       return res.status(401).json({ error: 'User not found' });
     }
 
-    res.json(sanitizeUser(result.rows[0]));
+    const safeUser = sanitizeUser(result.rows[0]);
+    let profileComplete = true;
+
+    try {
+      await ensureUserProfileExists(email, safeUser.name || email.split('@')[0]);
+      const completionState = await getProfileCompletionState(email);
+      profileComplete = completionState.isComplete;
+    } catch (profileCheckError) {
+      console.warn('⚠️ [AuthMe] Profile completion check failed:', profileCheckError.message);
+    }
+
+    res.json({
+      ...safeUser,
+      profile_complete: profileComplete,
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -957,7 +1056,8 @@ app.get('/api/auth/me', async (req, res) => {
 // Login
 app.post('/api/auth/login', async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { email: rawEmail, password } = req.body;
+    const email = rawEmail ? rawEmail.trim().toLowerCase() : '';
 
     if (!email) {
       return res.status(400).json({ error: 'Email is required' });
@@ -1014,7 +1114,8 @@ app.post('/api/auth/login', async (req, res) => {
 // Signup
 app.post('/api/auth/signup', async (req, res) => {
   try {
-    const { email, password, name } = req.body;
+    const { email: rawEmail, password, name } = req.body;
+    const email = rawEmail ? rawEmail.trim().toLowerCase() : '';
 
     if (!email) {
       return res.status(400).json({ error: 'Email is required' });
@@ -1097,7 +1198,8 @@ app.post('/api/auth/signup', async (req, res) => {
 // Verify Email OTP
 app.post('/api/auth/verify-otp', async (req, res) => {
   try {
-    const { email, otp } = req.body;
+    const { email: rawEmail, otp } = req.body;
+    const email = rawEmail ? rawEmail.trim().toLowerCase() : '';
 
     if (!email || !otp) {
       return res.status(400).json({ error: 'Email and OTP are required' });
@@ -1151,6 +1253,8 @@ app.post('/api/auth/verify-otp', async (req, res) => {
 
     const user = userResult.rows[0];
 
+    await ensureUserProfileExists(email, user.name || email.split('@')[0]);
+
     // Send welcome email now that they're verified
     const userName = user.name || email.split('@')[0];
     const welcomeMailOptions = {
@@ -1202,7 +1306,8 @@ app.post('/api/auth/verify-otp', async (req, res) => {
 // Resend OTP
 app.post('/api/auth/resend-otp', async (req, res) => {
   try {
-    const { email } = req.body;
+    const { email: rawEmail } = req.body;
+    const email = rawEmail ? rawEmail.trim().toLowerCase() : '';
 
     if (!email) {
       return res.status(400).json({ error: 'Email is required' });
@@ -1282,7 +1387,8 @@ app.post('/api/auth/resend-otp', async (req, res) => {
 // Forgot Password
 app.post('/api/auth/forgot-password', async (req, res) => {
   try {
-    const { email } = req.body;
+    const { email: rawEmail } = req.body;
+    const email = rawEmail ? rawEmail.trim().toLowerCase() : '';
 
     if (!email) {
       return res.status(400).json({ error: 'Email is required' });
@@ -1465,7 +1571,8 @@ app.post('/api/auth/google', async (req, res) => {
     });
     const payload = ticket.getPayload();
 
-    const { email, name, picture } = payload;
+    const { email: rawGoogleEmail, name, picture } = payload;
+    const email = rawGoogleEmail ? rawGoogleEmail.trim().toLowerCase() : '';
 
     if (!email) {
       return res.status(400).json({ error: 'Invalid Google token' });
@@ -1483,16 +1590,6 @@ app.post('/api/auth/google', async (req, res) => {
         'INSERT INTO "User" (email, name, password_hash, is_email_verified) VALUES ($1, $2, $3, $4) RETURNING *',
         [email, name || email.split('@')[0], 'oauth_user', true]
       );
-
-      // Also create a UserProfile with the Google avatar
-      try {
-        await pool.query(
-          'INSERT INTO "UserProfile" (user_email, display_name, avatar_url) VALUES ($1, $2, $3)',
-          [email, name || email.split('@')[0], picture || '']
-        );
-      } catch (profileErr) {
-        console.warn('⚠️ Could not create UserProfile for Google user:', profileErr.message);
-      }
 
       // Send welcome email for new Google users
       const userName = name || email.split('@')[0];
@@ -1529,6 +1626,8 @@ app.post('/api/auth/google', async (req, res) => {
         }
       });
     }
+
+    await ensureUserProfileExists(email, name || email.split('@')[0], picture || '');
 
     // Return user without sensitive data
     const jwtToken = generateToken(user.rows[0]);
@@ -1821,6 +1920,17 @@ app.post('/api/entities/:table', authenticateUser, async (req, res) => {
       return res.status(403).json({ error: 'Forbidden: admin access required to create records in this table' });
     }
 
+    if (table === 'UserProfile' && data?.is_popped_up === true) {
+      const missingFields = getMissingRequiredProfileFields(data);
+      if (missingFields.length > 0) {
+        return res.status(403).json({
+          error: 'Complete your profile before going live. Required: display name, age (18+), gender, interested in, ZIP code, and a profile photo.',
+          code: 'PROFILE_INCOMPLETE',
+          missing_fields: missingFields,
+        });
+      }
+    }
+
     // Handle array columns for specific tables
     const arrayColumns = {
       'UserProfile': ['interests', 'photos', 'videos'],
@@ -1989,7 +2099,8 @@ app.put('/api/entities/:table/:id', authenticateUser, async (req, res) => {
 
     if (table === 'UserProfile') {
       const previousResult = await pool.query(
-        `SELECT id, user_email, display_name, is_popped_up, popup_message, latitude, longitude, zip_code, location
+        `SELECT id, user_email, display_name, age, gender, interested_in, avatar_url, photos,
+                is_popped_up, popup_message, latitude, longitude, zip_code, location
          FROM "UserProfile"
          WHERE id = $1`,
         [id]
@@ -2001,6 +2112,22 @@ app.put('/api/entities/:table/:id', authenticateUser, async (req, res) => {
     const adminOnlyUpdateTables = ['SubscriptionSettings', 'AccessCode', 'AboutVideo'];
     if (adminOnlyUpdateTables.includes(table) && req.authenticatedUser.role !== 'admin') {
       return res.status(403).json({ error: 'Forbidden: admin access required to update records in this table' });
+    }
+
+    if (table === 'UserProfile') {
+      const isTransitioningLive = previousProfile?.is_popped_up !== true && data?.is_popped_up === true;
+      if (isTransitioningLive) {
+        const candidateProfile = { ...(previousProfile || {}), ...(data || {}) };
+        const missingFields = getMissingRequiredProfileFields(candidateProfile);
+
+        if (missingFields.length > 0) {
+          return res.status(403).json({
+            error: 'Complete your profile before going live. Required: display name, age (18+), gender, interested in, ZIP code, and a profile photo.',
+            code: 'PROFILE_INCOMPLETE',
+            missing_fields: missingFields,
+          });
+        }
+      }
     }
 
     // Handle array columns for specific tables
@@ -2208,6 +2335,123 @@ app.post('/api/contact', async (req, res) => {
   }
 });
 
+// ============ ZIP Geocoding (server-side) ============
+
+const zipGeoCache = new Map(); // permanent in-memory cache: cacheKey → { lat, lon } | null
+
+function _getCountryCandidates(zip, country) {
+  const candidates = [];
+  const norm = String(country || '').trim().toLowerCase();
+  const cmap = {
+    us: 'us', usa: 'us', 'united states': 'us', 'united states of america': 'us',
+    nl: 'nl', netherlands: 'nl', nederland: 'nl',
+    ca: 'ca', canada: 'ca',
+    gb: 'gb', uk: 'gb', 'united kingdom': 'gb',
+    de: 'de', germany: 'de', fr: 'fr', france: 'fr', au: 'au', australia: 'au',
+  };
+  if (cmap[norm]) candidates.push(cmap[norm]);
+  if (/[a-zA-Z]/.test(String(zip))) candidates.push('nl', 'gb');
+  candidates.push('us');
+  return [...new Set(candidates)];
+}
+
+async function _geocodeOneZip(cleanZip, country) {
+  const candidates = _getCountryCandidates(cleanZip, country);
+
+  // Try Zippopotam.us (fast, no rate-limit)
+  for (const cc of candidates) {
+    try {
+      const resp = await fetch(`https://api.zippopotam.us/${cc}/${encodeURIComponent(cleanZip)}`);
+      if (!resp.ok) continue;
+      const data = await resp.json();
+      const place = data?.places?.[0];
+      if (place) {
+        const coords = { lat: Number(place.latitude), lon: Number(place.longitude) };
+        if (Number.isFinite(coords.lat) && Number.isFinite(coords.lon)) return coords;
+      }
+    } catch { /* next */ }
+  }
+
+  // Fallback: Nominatim
+  for (const cc of [...candidates, '']) {
+    try {
+      const params = new URLSearchParams({ postalcode: cleanZip, format: 'json', limit: '1' });
+      if (cc) params.set('country', cc);
+      const resp = await fetch(`https://nominatim.openstreetmap.org/search?${params.toString()}`, {
+        headers: { 'User-Agent': 'PopUpPlay/1.0' },
+      });
+      if (!resp.ok) continue;
+      const data = await resp.json();
+      if (data?.[0]) {
+        const coords = { lat: Number(data[0].lat), lon: Number(data[0].lon) };
+        if (Number.isFinite(coords.lat) && Number.isFinite(coords.lon)) return coords;
+      }
+    } catch { /* next */ }
+  }
+
+  return null;
+}
+
+/**
+ * POST /api/geocode-zips
+ * Body: { zips: [ { zip: "75062", country: "us" }, ... ] }
+ * Returns: { results: { "75062_us": { lat, lon }, ... } }
+ *
+ * Server-side geocoding with permanent in-memory cache.
+ * Eliminates ALL external API calls from the browser.
+ */
+app.post('/api/geocode-zips', async (req, res) => {
+  try {
+    const { zips } = req.body; // array of { zip, country? }
+    if (!Array.isArray(zips)) return res.status(400).json({ error: 'zips must be an array' });
+
+    // Deduplicate by cache key
+    const uniqueJobs = new Map(); // cacheKey → { cleanZip, country }
+    for (const entry of zips) {
+      const cleanZip = String(entry?.zip || '').trim();
+      if (!cleanZip) continue;
+      const country = String(entry?.country || '').trim().toLowerCase() || 'auto';
+      const key = `${cleanZip}_${country}`;
+      if (!uniqueJobs.has(key) && !zipGeoCache.has(key)) {
+        uniqueJobs.set(key, { cleanZip, country: entry?.country || '' });
+      }
+    }
+
+    // Geocode all uncached ZIPs in parallel (server has no browser connection limit)
+    if (uniqueJobs.size > 0) {
+      const entries = [...uniqueJobs.entries()];
+      const PARALLEL = 20; // server can handle many concurrent outbound requests
+      for (let i = 0; i < entries.length; i += PARALLEL) {
+        const batch = entries.slice(i, i + PARALLEL);
+        const results = await Promise.all(
+          batch.map(async ([key, { cleanZip, country }]) => {
+            const coords = await _geocodeOneZip(cleanZip, country);
+            return [key, coords];
+          })
+        );
+        results.forEach(([key, coords]) => zipGeoCache.set(key, coords));
+      }
+    }
+
+    // Build response from cache
+    const output = {};
+    for (const entry of zips) {
+      const cleanZip = String(entry?.zip || '').trim();
+      if (!cleanZip) continue;
+      const country = String(entry?.country || '').trim().toLowerCase() || 'auto';
+      const key = `${cleanZip}_${country}`;
+      if (zipGeoCache.has(key) && zipGeoCache.get(key) !== null) {
+        output[key] = zipGeoCache.get(key);
+      }
+    }
+
+    res.json({ results: output });
+  } catch (err) {
+    console.error('❌ [geocode-zips] Error:', err.message);
+    res.status(500).json({ error: 'Geocoding failed' });
+  }
+});
+
 // ============ Health Check ============
 
 app.get('/api/health', (req, res) => {
@@ -2221,6 +2465,104 @@ async function seedData() {
 }
 
 // ============ Broadcast API Routes ============
+
+/**
+ * Generate a deterministic HMAC-SHA256 unsubscribe token for a given email.
+ * Uses JWT_SECRET so tokens are unforgeable without the server secret.
+ */
+function generateUnsubscribeToken(email) {
+  return crypto.createHmac('sha256', JWT_SECRET).update(email.toLowerCase().trim()).digest('hex');
+}
+
+/**
+ * Timing-safe token verification. Returns true if the token is valid.
+ */
+function verifyUnsubscribeToken(email, token) {
+  try {
+    if (!token || token.length !== 64) return false;
+    const expected = Buffer.from(generateUnsubscribeToken(email), 'hex');
+    const actual = Buffer.from(token, 'hex');
+    return crypto.timingSafeEqual(actual, expected);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Build the absolute unsubscribe URL for a given user email.
+ * In production FRONTEND_URL is the public domain (e.g. https://popupplay.fun)
+ * and the API is routed through the same domain under /api/.
+ * In local dev it falls back to the API port directly.
+ */
+function getUnsubscribeUrl(email) {
+  const base = (FRONTEND_URL === 'http://localhost:5173' || FRONTEND_URL === 'http://localhost:3000')
+    ? 'http://localhost:3001'
+    : FRONTEND_URL;
+  return `${base}/api/unsubscribe?email=${encodeURIComponent(email)}&token=${generateUnsubscribeToken(email)}`;
+}
+
+/**
+ * Minimal HTML page returned by the unsubscribe endpoint.
+ */
+function buildUnsubscribeResponseHtml(success, heading, body) {
+  const color = success ? '#16a34a' : '#dc2626';
+  return `<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${heading} – Pop Up Play</title>
+<style>body{font-family:Arial,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#f8fafc}.
+card{max-width:480px;width:100%;background:#fff;border-radius:16px;padding:40px 32px;box-shadow:0 4px 24px rgba(0,0,0,.08);text-align:center}
+h1{color:${color};margin-top:0}p{color:#475569;line-height:1.6}a{color:#8b5cf6;font-weight:600}</style>
+</head>
+<body><div class="card">
+<h1>${heading}</h1>
+<p>${body}</p>
+<p style="margin-top:24px"><a href="${FRONTEND_URL}">Back to Pop Up Play</a></p>
+</div></body></html>`;
+}
+
+// GET /api/unsubscribe?email=xxx&token=xxx  — public, no auth required
+app.get('/api/unsubscribe', async (req, res) => {
+  const { email, token } = req.query;
+
+  if (!email || !token) {
+    return res.status(400).send(buildUnsubscribeResponseHtml(
+      false, 'Invalid Link', 'The unsubscribe link is missing required parameters.'
+    ));
+  }
+
+  if (!verifyUnsubscribeToken(email, token)) {
+    return res.status(400).send(buildUnsubscribeResponseHtml(
+      false, 'Invalid Link', 'This unsubscribe link is invalid. Please use the link from your email.'
+    ));
+  }
+
+  try {
+    const result = await pool.query(
+      `UPDATE "UserProfile" SET email_notifications_enabled = false WHERE user_email = $1 RETURNING user_email`,
+      [email]
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).send(buildUnsubscribeResponseHtml(
+        false, 'Not Found', 'No account was found for this email address.'
+      ));
+    }
+
+    console.log(`🔕 [Unsubscribe] ${email} opted out of broadcast emails`);
+    return res.send(buildUnsubscribeResponseHtml(
+      true,
+      'You\'ve been unsubscribed',
+      'You will no longer receive broadcast email announcements from Pop Up Play. ' +
+      'You can re-enable email notifications at any time in your profile settings.'
+    ));
+  } catch (err) {
+    console.error('❌ [Unsubscribe] Error:', err.message);
+    return res.status(500).send(buildUnsubscribeResponseHtml(
+      false, 'Something went wrong', 'Please try again later or manage your preferences in the app.'
+    ));
+  }
+});
 
 // POST /api/broadcast/send - Send broadcast to all users (admin only)
 app.post('/api/broadcast/send', authenticateUser, requireAdmin, async (req, res) => {
@@ -2242,7 +2584,10 @@ app.post('/api/broadcast/send', authenticateUser, requireAdmin, async (req, res)
       [adminEmail]
     );
     const allUsers = usersResult.rows;
-    const recipientCount = allUsers.length;
+
+    // Only users who have NOT opted out receive the in-app message (and the email)
+    const subscribedUsers = allUsers.filter(u => u.email_notifications_enabled !== false);
+    const recipientCount = subscribedUsers.length;
 
     if (recipientCount === 0) {
       return res.json({
@@ -2250,7 +2595,7 @@ app.post('/api/broadcast/send', authenticateUser, requireAdmin, async (req, res)
         data: {
           broadcast_sent: true,
           recipients: 0,
-          message: 'No other users to send broadcast to'
+          message: 'No other users to send broadcast to (all users have disabled broadcast messages)'
         }
       });
     }
@@ -2265,8 +2610,8 @@ app.post('/api/broadcast/send', authenticateUser, requireAdmin, async (req, res)
 
     const broadcast = broadcastResult.rows[0];
 
-    // Create message records for each user
-    const messageInserts = allUsers.map(user => [
+    // Create in-app message records only for subscribed users
+    const messageInserts = subscribedUsers.map(user => [
       adminEmail,
       user.email,
       user.email, // recipient_email
@@ -2291,16 +2636,12 @@ app.post('/api/broadcast/send', authenticateUser, requireAdmin, async (req, res)
       );
     }
 
-    // Send emails to all users who have email notifications enabled
-    console.log(`📧 [Broadcast] Sending emails to ${allUsers.length} users...`);
+    // Send emails to subscribed users (those who haven't opted out)
+    console.log(`📧 [Broadcast] Sending emails to ${subscribedUsers.length} users...`);
     let emailsSent = 0;
     let emailsFailed = 0;
 
-    for (const user of allUsers) {
-      if (!user.email_notifications_enabled) {
-        console.log(`⏭️  [Broadcast] Skipping email for ${user.email} (notifications disabled)`);
-        continue;
-      }
+    for (const user of subscribedUsers) {
 
       try {
         const htmlContent = `
@@ -2319,7 +2660,9 @@ app.post('/api/broadcast/send', authenticateUser, requireAdmin, async (req, res)
                 Open Pop Up Play
               </a>
               <p style="margin-top: 22px; color: #94a3b8; font-size: 12px; border-top: 1px solid #e2e8f0; padding-top: 12px;">
-                You are receiving this because email notifications are enabled in your profile settings. You can manage your preferences in the app.
+                You are receiving this because email notifications are enabled in your account.
+                You can manage your preferences in the app or
+                <a href="${getUnsubscribeUrl(user.email)}" style="color: #8b5cf6; text-decoration: underline;">unsubscribe from broadcast emails</a>.
               </p>
             </div>
           </div>
@@ -2579,10 +2922,10 @@ app.post('/api/functions/getSubscriptionStatus', authenticateUserStrict, async (
     });
   } catch (error) {
     console.error('❌ [getSubscriptionStatus] Error:', error.message);
-    // Fail secure - deny access on error
+    // Fail open - grant access on transient errors so paid users aren't locked out
     res.status(500).json({ 
-      required: true,
-      hasAccess: false,
+      required: false,
+      hasAccess: true,
       status: 'error',
       error: error.message
     });

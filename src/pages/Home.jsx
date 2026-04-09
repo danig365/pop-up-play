@@ -22,6 +22,7 @@ import ScrollControl from '@/components/map/ScrollControl';
 import NavigationMenu from '@/components/navigation/NavigationMenu';
 import { useSubscription } from '@/lib/SubscriptionContext';
 import { isLocationEnabled, requestCurrentLocation, setLocationEnabled } from '@/lib/locationPermission';
+import { isRequiredProfileComplete } from '@/lib/profileCompletion';
 
 export default function Home() {
   const [user, setUser] = useState(null);
@@ -54,6 +55,7 @@ export default function Home() {
     },
     enabled: !!user?.email
   });
+  const isProfileComplete = isRequiredProfileComplete(myProfile);
 
   const { data: activeUsers = [] } = useQuery({
     queryKey: ['activeUsers'],
@@ -120,6 +122,7 @@ export default function Home() {
     if (
       !autoPopTriggeredRef.current &&
       myProfile &&
+      isProfileComplete &&
       !myProfile.is_popped_up &&
       !myProfile.has_ever_popped_up &&
       userLocation?.latitude &&
@@ -139,7 +142,7 @@ export default function Home() {
         last_location_update: new Date().toISOString()
       });
     }
-  }, [myProfile, userLocation]);
+  }, [myProfile, userLocation, isProfileComplete]);
 
   const [popupMessage, setPopupMessage] = useState('');
 
@@ -153,6 +156,11 @@ export default function Home() {
     // No subscription required to pop up
     if (isPopping && !popupMessage.trim()) {
       return; // Don't allow popping up without a message
+    }
+
+    if (isPopping && !isProfileComplete) {
+      setLocationError('Please complete your profile (display name, age 18+, gender, interested in, ZIP code, and profile photo) before going live.');
+      return;
     }
 
     setIsUpdating(true);
@@ -200,6 +208,14 @@ export default function Home() {
 
       await updateProfileMutation.mutateAsync(updateData);
     } catch (error) {
+      const serverErrorCode = error?.response?.data?.code;
+      const serverErrorMessage = error?.response?.data?.error;
+
+      if (isPopping && serverErrorCode === 'PROFILE_INCOMPLETE') {
+        setLocationError(serverErrorMessage || 'Please complete your profile before going live.');
+        return;
+      }
+
       if (isPopping) {
         setLocationError(error?.userMessage || 'Location access is required to pop up. Please enable location and try again.');
       }
@@ -326,7 +342,7 @@ export default function Home() {
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.3 }}>
 
-            {!myProfile?.display_name ?
+            {!isProfileComplete ?
             <div className="flex justify-center">
                 <Link to={createPageUrl('Profile')}>
                   <Button className="px-8 py-6 text-lg rounded-full bg-gradient-to-r from-violet-600 to-purple-600 text-white shadow-xl hover:shadow-2xl">

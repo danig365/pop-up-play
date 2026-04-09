@@ -75,7 +75,8 @@ export function SubscriptionProvider({ children }) {
         const response = await base44.functions.invoke('getSubscriptionStatus', {});
         return response || { required: false, hasAccess: false, status: 'unknown' };
       } catch {
-        return { required: true, hasAccess: false, status: 'error' };
+        // Fail open - grant access on error so paid users aren't locked out
+        return { required: false, hasAccess: true, status: 'error' };
       }
     },
     enabled: !!user,

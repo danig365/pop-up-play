@@ -32,8 +32,8 @@ export default function SubscriptionGate({ children }) {
         return response || { is_active: false, status: 'inactive', hasAccess: false, required: false };
       } catch (err) {
         console.error('❌ Error getting subscription status:', err);
-        // On error, deny access (fail secure)
-        return { required: true, hasAccess: false, status: 'error' };
+        // Fail open - grant access on error so paid users aren't locked out
+        return { required: false, hasAccess: true, status: 'error' };
       }
     },
     enabled: !!user,

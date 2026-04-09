@@ -60,6 +60,7 @@ export default function EnterAccessCode() {
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['userSubscription'] });
+      queryClient.invalidateQueries({ queryKey: ['subscriptionStatus'] });
       toast.success('Access code redeemed successfully!');
       setTimeout(() => {
         navigate(returnTo || createPageUrl('Home'));
@@ -72,11 +73,11 @@ export default function EnterAccessCode() {
 
   const handleSubmit = (e) => {
     e.preventDefault();
+    if (redeemMutation.isPending) return;
     if (!code.trim()) {
       toast.error('Please enter an access code');
       return;
     }
-    // @ts-ignore - mutationFn accepts string parameter
     redeemMutation.mutate(code.trim());
   };
 

@@ -141,7 +141,7 @@ class APIEntity {
     );
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
-      const error = new Error(`Failed to create ${this.tableName}`);
+      const error = new Error(errorData.error || `Failed to create ${this.tableName}`);
       error.response = { data: errorData };
       throw error;
     }
@@ -161,7 +161,7 @@ class APIEntity {
     );
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
-      const error = new Error(`Failed to update ${this.tableName}`);
+      const error = new Error(errorData.error || `Failed to update ${this.tableName}`);
       error.response = { data: errorData };
       throw error;
     }
@@ -251,9 +251,13 @@ class APIFunctions {
           method: 'POST',
           headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify({ user_email: userEmail })
-        }).then(r => r.json()).catch(err => {
+        }).then(r => {
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          return r.json();
+        }).catch(err => {
           console.error('Error calling getSubscriptionStatus:', err);
-          return { required: true, hasAccess: false, status: 'error' };
+          // Fail open - grant access on error so paid users aren't locked out
+          return { required: false, hasAccess: true, status: 'error' };
         });
       case 'popDownUser':
         return { success: true };

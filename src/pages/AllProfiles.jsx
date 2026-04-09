@@ -11,6 +11,7 @@ import { createPageUrl } from '@/utils';
 import BlockButton from '@/components/blocking/BlockButton';
 import { useSubscription } from '@/lib/SubscriptionContext';
 import { getApiBaseUrl } from '@/lib/apiUrl';
+import { getProfileCoords, calculateDistanceMiles, bulkGeocodeProfiles } from '@/lib/zipGeocode';
 
 // State name to abbreviation mapping
 const stateMapping = {
@@ -26,59 +27,23 @@ const stateMapping = {
   'virginia': 'VA', 'washington': 'WA', 'west virginia': 'WV', 'wisconsin': 'WI', 'wyoming': 'WY'
 };
 
-// Cache for geocoded ZIP codes
-const zipCache = new Map();
-
-// Geocode ZIP code to coordinates
-const geocodeZip = async (zip, country = 'US') => {
-  if (!zip) return null;
-  
-  const cacheKey = `${zip}_${country}`;
-  if (zipCache.has(cacheKey)) {
-    return zipCache.get(cacheKey);
-  }
-  
-  try {
-    const response = await fetch(
-      `https://nominatim.openstreetmap.org/search?postalcode=${zip}&country=${country}&format=json&limit=1`
-    );
-    const data = await response.json();
-    
-    if (data && data.length > 0) {
-      const coords = { lat: parseFloat(data[0].lat), lon: parseFloat(data[0].lon) };
-      zipCache.set(cacheKey, coords);
-      return coords;
-    }
-  } catch (error) {
-    console.error('Geocoding failed:', error);
-  }
-  
-  return null;
-};
-
-// Calculate distance between two coordinates in miles
-const calculateDistance = (lat1, lon1, lat2, lon2) => {
-  if (!lat1 || !lon1 || !lat2 || !lon2) return null;
-  
-  const R = 3959; // Earth's radius in miles
-  const dLat = (lat2 - lat1) * Math.PI / 180;
-  const dLon = (lon2 - lon1) * Math.PI / 180;
-  const a = 
-    Math.sin(dLat/2) * Math.sin(dLat/2) +
-    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
-    Math.sin(dLon/2) * Math.sin(dLon/2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-  return R * c;
-};
+// Note: bulkGeocodeProfiles, calculateDistanceMiles, getProfileCoords imported from @/lib/zipGeocode
 
 export default function AllProfiles() {
+  const INITIAL_PROFILES_TO_SHOW = 10;
+  const LOAD_MORE_STEP = 10;
+  const DISTANCE_BATCH_SIZE = 40;
+
   const [user, setUser] = useState(null);
   const [editingProfile, setEditingProfile] = useState(null);
   const [editForm, setEditForm] = useState({});
   const [confirmDelete, setConfirmDelete] = useState(null);
+  const [screenNameFilter, setScreenNameFilter] = useState('');
   const [interestFilter, setInterestFilter] = useState('');
   const [locationFilter, setLocationFilter] = useState('');
   const [profilesWithDistance, setProfilesWithDistance] = useState([]);
+  const [visibleCount, setVisibleCount] = useState(INITIAL_PROFILES_TO_SHOW);
+  const [distanceProgress, setDistanceProgress] = useState({ resolved: 0, total: 0 });
   const navigate = useNavigate();
   const { guardAction } = useSubscription();
 
@@ -282,7 +247,7 @@ export default function AllProfiles() {
   const { data: allProfiles = [], isLoading } = useQuery({
     queryKey: ['allProfiles'],
     queryFn: async () => {
-      const profiles = await base44.entities.UserProfile.list();
+      const profiles = await base44.entities.UserProfile.list('', 500);
       return profiles;
     },
     enabled: !!user?.email
@@ -321,59 +286,103 @@ export default function AllProfiles() {
     return map;
   }, [allSubscriptions]);
 
-  // Calculate distances based on ZIP codes
+  // Calculate distances progressively in background batches (non-blocking UI)
   useEffect(() => {
+    let cancelled = false;
+
     const calculateDistances = async () => {
-      if (!myProfile?.zip_code) {
-        setProfilesWithDistance(allProfiles);
-        return;
+      if (!cancelled) setProfilesWithDistance(prev => {
+        const prevMap = new Map(prev.map(p => [p.id, p.zipDistance]));
+        return allProfiles.map(p => ({ ...p, zipDistance: prevMap.get(p.id) ?? null }));
+      });
+      if (!cancelled) {
+        const totalCandidates = allProfiles.filter(p => p.user_email !== user?.email).length;
+        setDistanceProgress({ resolved: 0, total: totalCandidates });
       }
-      
-      // Geocode user's ZIP
-      const myCoords = await geocodeZip(myProfile.zip_code, myProfile.country || 'US');
+
+      if (!allProfiles.length) return;
+
+      const sourceMyProfile = myProfile || allProfiles.find(p => p.user_email === user?.email) || null;
+      const targetProfiles = allProfiles.filter(p => p.user_email !== user?.email);
+
+      if (sourceMyProfile) {
+        await bulkGeocodeProfiles([sourceMyProfile]);
+      }
+      if (cancelled) return;
+
+      const myCoords = getProfileCoords(sourceMyProfile);
       if (!myCoords) {
-        setProfilesWithDistance(allProfiles);
+        if (!cancelled) {
+          setDistanceProgress({ resolved: targetProfiles.length, total: targetProfiles.length });
+        }
         return;
       }
-      
-      // Calculate distances for all profiles
-      const profilesWithDist = await Promise.all(
-        allProfiles.map(async (profile) => {
-          if (!profile.zip_code) {
-            return { ...profile, zipDistance: null };
-          }
-          
-          const profileCoords = await geocodeZip(profile.zip_code, profile.country || 'US');
-          if (!profileCoords) {
-            return { ...profile, zipDistance: null };
-          }
-          
-          const distance = calculateDistance(
-            myCoords.lat,
-            myCoords.lon,
-            profileCoords.lat,
-            profileCoords.lon
-          );
-          
-          return { ...profile, zipDistance: distance };
-        })
-      );
-      
-      setProfilesWithDistance(profilesWithDist);
+
+      let processed = 0;
+
+      for (let i = 0; i < targetProfiles.length; i += DISTANCE_BATCH_SIZE) {
+        const batch = targetProfiles.slice(i, i + DISTANCE_BATCH_SIZE);
+        await bulkGeocodeProfiles(batch);
+        if (cancelled) return;
+
+        const distanceById = new Map(
+          batch.map(p => {
+            const coords = getProfileCoords(p);
+            const zipDistance = coords
+              ? calculateDistanceMiles(myCoords.lat, myCoords.lon, coords.lat, coords.lon)
+              : null;
+            return [p.id, zipDistance];
+          })
+        );
+
+        setProfilesWithDistance(prev => prev.map(profile => (
+          distanceById.has(profile.id)
+            ? { ...profile, zipDistance: distanceById.get(profile.id) }
+            : profile
+        )));
+
+        processed += batch.length;
+        if (!cancelled) {
+          setDistanceProgress({ resolved: processed, total: targetProfiles.length });
+        }
+
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
     };
-    
+
     calculateDistances();
-  }, [allProfiles, myProfile]);
+
+    return () => { cancelled = true; };
+  }, [allProfiles, myProfile, user?.email]);
+
+  const originalOrderMap = React.useMemo(() => {
+    const map = new Map();
+    allProfiles.forEach((profile, index) => map.set(profile.id, index));
+    return map;
+  }, [allProfiles]);
 
   const sortedProfiles = React.useMemo(() => {
     const selfProfile = profilesWithDistance.find(p => p.user_email === user?.email) || null;
     let profiles = profilesWithDistance.filter(p => p.user_email !== user?.email);
+
+    // Filter by screen/display name
+    if (screenNameFilter.trim()) {
+      const terms = screenNameFilter
+        .toLowerCase()
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean);
+      profiles = profiles.filter(p => {
+        const combinedName = `${p.display_name || ''} ${p.name || ''}`.trim().toLowerCase();
+        return terms.every(term => combinedName.includes(term));
+      });
+    }
     
     // Filter by interests
     if (interestFilter.trim()) {
       profiles = profiles.filter(p => 
         p.interests && p.interests.some(interest => 
-          interest.toLowerCase().includes(interestFilter.toLowerCase())
+          interest.trim().toLowerCase().includes(interestFilter.trim().toLowerCase())
         )
       );
     }
@@ -381,11 +390,11 @@ export default function AllProfiles() {
     // Filter by location
     if (locationFilter.trim()) {
       profiles = profiles.filter(p => {
-        const searchTerm = locationFilter.toLowerCase();
-        const city = (p.city || '').toLowerCase();
-        const state = (p.state || '').toLowerCase();
-        const zip = (p.zip_code || '').toLowerCase();
-        const country = (p.country || '').toLowerCase();
+        const searchTerm = locationFilter.trim().toLowerCase();
+        const city = (p.city || '').trim().toLowerCase();
+        const state = (p.state || '').trim().toLowerCase();
+        const zip = (p.zip_code || '').trim().toLowerCase();
+        const country = (p.country || '').trim().toLowerCase();
         
         // Check if search term is a state name or abbreviation
         const stateAbbrev = stateMapping[searchTerm];
@@ -399,25 +408,30 @@ export default function AllProfiles() {
       });
     }
     
-    // Sort by ZIP code distance
+    // Sort by ZIP code distance (known distances first), then preserve stable fallback order
     profiles.sort((a, b) => {
-      // Always show current user's profile first
-      if (a.user_email === user?.email) return -1;
-      if (b.user_email === user?.email) return 1;
-
       if (a.zipDistance === null && b.zipDistance === null) {
-        // Both have no distance, sort alphabetically
-        const aLocation = `${a.city || ''} ${a.state || ''}`.trim();
-        const bLocation = `${b.city || ''} ${b.state || ''}`.trim();
-        return aLocation.localeCompare(bLocation);
+        return (originalOrderMap.get(a.id) || 0) - (originalOrderMap.get(b.id) || 0);
       }
       if (a.zipDistance === null) return 1; // a goes to end
       if (b.zipDistance === null) return -1; // b goes to end
-      return a.zipDistance - b.zipDistance; // Sort by distance ascending
+      if (a.zipDistance !== b.zipDistance) return a.zipDistance - b.zipDistance;
+      return (originalOrderMap.get(a.id) || 0) - (originalOrderMap.get(b.id) || 0);
     });
     
     return selfProfile ? [selfProfile, ...profiles] : profiles;
-  }, [profilesWithDistance, blockedUsers, interestFilter, locationFilter, user?.email]);
+  }, [profilesWithDistance, screenNameFilter, interestFilter, locationFilter, user?.email, originalOrderMap]);
+
+  useEffect(() => {
+    setVisibleCount(INITIAL_PROFILES_TO_SHOW);
+  }, [screenNameFilter, interestFilter, locationFilter, allProfiles.length]);
+
+  const visibleProfiles = React.useMemo(
+    () => sortedProfiles.slice(0, visibleCount),
+    [sortedProfiles, visibleCount]
+  );
+
+  const canLoadMore = visibleCount < sortedProfiles.length;
 
   if (!user || isLoading) {
     return (
@@ -449,6 +463,26 @@ export default function AllProfiles() {
           initial={{ opacity: 0, y: -10 }}
           animate={{ opacity: 1, y: 0 }}
         >
+          <div className="bg-white rounded-2xl shadow-sm p-4">
+            <div className="flex items-center gap-3">
+              <Filter className="w-5 h-5 text-purple-600" />
+              <Input
+                placeholder="Filter by name (e.g., Mike, Sarah Johnson)..."
+                value={screenNameFilter}
+                onChange={(e) => setScreenNameFilter(e.target.value)}
+                className="flex-1 rounded-xl border-purple-200 focus:border-purple-400" />
+              {screenNameFilter && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setScreenNameFilter('')}
+                  className="text-slate-500">
+                  Clear
+                </Button>
+              )}
+            </div>
+          </div>
+
           <div className="bg-white rounded-2xl shadow-sm p-4">
             <div className="flex items-center gap-3">
               <Filter className="w-5 h-5 text-purple-600" />
@@ -499,6 +533,17 @@ export default function AllProfiles() {
           <p className="text-slate-600">
             {sortedProfiles.length} {sortedProfiles.length === 1 ? 'profile' : 'profiles'} nearby
           </p>
+          {distanceProgress.total > 0 && distanceProgress.resolved < distanceProgress.total && (
+            <p className="text-xs text-slate-500 mt-1">
+              Calculating distances... {distanceProgress.resolved}/{distanceProgress.total}
+            </p>
+          )}
+          {distanceProgress.total > 0 && distanceProgress.resolved === distanceProgress.total
+            && profilesWithDistance.every(p => p.zipDistance === null || p.user_email === user?.email) && (
+            <p className="text-xs text-amber-600 mt-1">
+              Add a ZIP code to your profile to see distances.
+            </p>
+          )}
         </motion.div>
 
         {/* Profiles Grid */}
@@ -508,12 +553,13 @@ export default function AllProfiles() {
           </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-            {sortedProfiles.map((profile, index) => (
+            {visibleProfiles.map((profile, index) => (
               <motion.div
                 key={profile.id}
+                layout
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: index * 0.05 }}
+                transition={{ layout: { duration: 0.3 }, delay: index * 0.05 }}
                 whileHover={{ scale: 1.02 }}
                 className="cursor-pointer relative"
                 onClick={() => {
@@ -642,6 +688,18 @@ export default function AllProfiles() {
                 </div>
               </motion.div>
             ))}
+          </div>
+        )}
+
+        {canLoadMore && (
+          <div className="mt-8 flex justify-center">
+            <Button
+              onClick={() => setVisibleCount((count) => count + LOAD_MORE_STEP)}
+              variant="outline"
+              className="rounded-xl"
+            >
+              Load more profiles
+            </Button>
           </div>
         )}
 

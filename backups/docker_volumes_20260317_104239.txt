@@ -1,8 +1,0 @@
-DRIVER    VOLUME NAME
-local     pop-up-play_postgres_data
-local     pop-up-play_uploads_data
-NETWORK ID     NAME                  DRIVER    SCOPE
-01f6585984d7   bridge                bridge    local
-a3cd93cd6205   host                  host      local
-28fdd79d3ee0   none                  null      local
-d72fd054983a   pop-up-play_default   bridge    local

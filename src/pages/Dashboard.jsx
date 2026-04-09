@@ -5,7 +5,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
 import {
   ArrowLeft, MapPin, Eye, EyeOff, Image, Video,
-  Settings, LogOut, Trash2, Edit2, Loader2, Clock, Ban, CreditCard } from
+  Settings, LogOut, Trash2, Edit2, Loader2, Clock, Ban, CreditCard, Megaphone } from
 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -34,6 +34,7 @@ export default function Dashboard() {
   const [locationLoading, setLocationLoading] = useState(false);
   const [showLocationHelp, setShowLocationHelp] = useState(false);
   const queryClient = useQueryClient();
+  const [broadcastEnabled, setBroadcastEnabled] = useState(true);
 
   useEffect(() => {
     const loadUser = async () => {
@@ -63,7 +64,25 @@ export default function Dashboard() {
       const profiles = await base44.entities.UserProfile.filter({ user_email: user.email });
       return profiles[0] || null;
     },
-    enabled: !!user?.email
+    enabled: !!user?.email,
+    onSuccess: (profile) => {
+      if (profile) setBroadcastEnabled(profile.email_notifications_enabled !== false);
+    }
+  });
+
+  // Sync broadcastEnabled when myProfile loads
+  useEffect(() => {
+    if (myProfile) setBroadcastEnabled(myProfile.email_notifications_enabled !== false);
+  }, [myProfile?.email_notifications_enabled]);
+
+  const broadcastMutation = useMutation({
+    mutationFn: async (enabled) => {
+      if (!myProfile?.id) throw new Error('No profile');
+      return base44.entities.UserProfile.update(myProfile.id, { email_notifications_enabled: enabled });
+    },
+    onMutate: (enabled) => setBroadcastEnabled(enabled),
+    onError: () => setBroadcastEnabled(!broadcastEnabled),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['myProfile', user?.email] }),
   });
 
 
@@ -333,6 +352,32 @@ export default function Dashboard() {
             }
             </div>
           }
+
+          <div className="flex items-center gap-4 p-4 border-b border-slate-100">
+            <div className="w-10 h-10 rounded-full bg-purple-100 flex items-center justify-center">
+              <Megaphone className="w-5 h-5 text-purple-600" />
+            </div>
+            <div className="flex-1">
+              <p className="font-medium text-slate-800">Broadcast Messages</p>
+              <p className="text-sm text-slate-500">
+                {broadcastEnabled ? 'Receiving admin announcements' : 'Announcements turned off'}
+              </p>
+            </div>
+            <Button
+              variant={broadcastEnabled ? 'outline' : 'default'}
+              onClick={() => broadcastMutation.mutate(!broadcastEnabled)}
+              disabled={broadcastMutation.isPending || !myProfile?.id}
+              className={`min-w-[96px] ${
+                broadcastEnabled
+                  ? 'border-rose-300 text-rose-600 hover:bg-rose-50'
+                  : 'bg-violet-600 text-white hover:bg-violet-700'
+              }`}
+            >
+              {broadcastMutation.isPending
+                ? <Loader2 className="w-4 h-4 animate-spin" />
+                : broadcastEnabled ? 'Turn Off' : 'Turn On'}
+            </Button>
+          </div>
 
           {user?.role === 'admin' && (
             <Link to={createPageUrl('SubscriptionSettings') + '?from=dashboard'}>

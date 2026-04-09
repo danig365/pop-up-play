@@ -7,6 +7,7 @@ import IncomingCallDetector from '@/components/IncomingCallDetector';
 import { PAGE_TIERS } from '@/lib/SubscriptionContext';
 import { useAuth } from '@/lib/AuthContext';
 import { base44 } from '@/api/base44Client';
+import { isRequiredProfileComplete } from '@/lib/profileCompletion';
 import { createPageUrl } from '@/utils';
 import { useLocation, useNavigate } from 'react-router-dom';
 
@@ -24,11 +25,13 @@ export default function Layout({ children, currentPageName }) {
   const [isProfileCheckLoading, setIsProfileCheckLoading] = useState(true);
   const [isProfileComplete, setIsProfileComplete] = useState(true);
   const hasCompletedInitialProfileCheckRef = useRef(false);
+  const [profileCheckTick, setProfileCheckTick] = useState(0);
   const location = useLocation();
   const navigate = useNavigate();
 
   useEffect(() => {
     let isCancelled = false;
+    let retryTimeout = null;
 
     const checkProfileCompletion = async () => {
       if (!userEmail) {
@@ -47,17 +50,15 @@ export default function Layout({ children, currentPageName }) {
         if (isCancelled) return;
 
         const profile = profiles[0] || null;
-
-        const hasZip = Boolean(profile?.zip_code && profile.zip_code.trim());
-        const hasPicture = Boolean(
-          (profile?.avatar_url && profile.avatar_url.trim()) ||
-          (Array.isArray(profile?.photos) && profile.photos.length > 0)
-        );
-
-        setIsProfileComplete(hasZip && hasPicture);
+        setIsProfileComplete(isRequiredProfileComplete(profile));
       } catch (error) {
         if (isCancelled) return;
         setIsProfileComplete(true);
+        retryTimeout = setTimeout(() => {
+          if (!isCancelled) {
+            setProfileCheckTick((value) => value + 1);
+          }
+        }, 15000);
       } finally {
         if (isCancelled) return;
         hasCompletedInitialProfileCheckRef.current = true;
@@ -69,8 +70,23 @@ export default function Layout({ children, currentPageName }) {
 
     return () => {
       isCancelled = true;
+      if (retryTimeout) {
+        clearTimeout(retryTimeout);
+      }
     };
-  }, [userEmail, location.pathname, location.search]);
+  }, [userEmail, profileCheckTick]);
+
+  useEffect(() => {
+    const handleProfileUpdated = () => {
+      setProfileCheckTick((value) => value + 1);
+    };
+
+    window.addEventListener('profile:updated', handleProfileUpdated);
+
+    return () => {
+      window.removeEventListener('profile:updated', handleProfileUpdated);
+    };
+  }, []);
 
   useEffect(() => {
     if (!userEmail || isProfileCheckLoading || isProfileComplete) return;
