@@ -62,11 +62,16 @@ export default function SubscriptionSuccess() {
         if (token) headers.Authorization = `Bearer ${token}`;
         if (user.email) headers['x-user-email'] = user.email;
 
-        await fetch(`${API_BASE_URL}/paypal/activate-subscription`, {
+        const res = await fetch(`${API_BASE_URL}/paypal/activate-subscription`, {
           method: 'POST',
           headers,
           body: JSON.stringify({ subscriptionID: subscriptionId }),
         });
+
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          console.error('Activation failed:', res.status, errData);
+        }
 
         // Refresh subscription data everywhere
         queryClient.invalidateQueries({ queryKey: ['userSubscription'] });

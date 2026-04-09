@@ -139,6 +139,42 @@ function sanitizeUser(row) {
   return safe;
 }
 
+function isAdminMessageSender(senderEmail, senderProfile = null) {
+  const normalizedEmail = String(senderEmail || '').trim().toLowerCase();
+  const normalizedName = String(senderProfile?.display_name || senderProfile?.name || '').trim().toLowerCase();
+
+  return (
+    normalizedEmail === 'contact@popupplay.fun' ||
+    normalizedEmail === 'admin@popupplay.com' ||
+    normalizedName === 'admin'
+  );
+}
+
+function buildChatEmailHtml({ senderName, messageContent, isAdminMessage }) {
+  const safeMessage = String(messageContent || '').trim();
+  const bodyHtml = isAdminMessage
+    ? `<div style="background-color: #f1f5f9; padding: 15px; border-radius: 8px; margin: 20px 0;">
+          <p style="color: #1e293b; font-style: italic; margin: 0; white-space: pre-wrap;">"${safeMessage}"</p>
+        </div>
+        <p style="color: #475569; margin: 20px 0;">Log in to <strong>Pop Up Play</strong> to reply to this message.</p>`
+    : `<div style="background-color: #f1f5f9; padding: 15px; border-radius: 8px; margin: 20px 0;">
+          <p style="color: #1e293b; margin: 0;">You have a new message from ${senderName}.</p>
+        </div>
+        <p style="color: #475569; margin: 20px 0;">Log in to <strong>Pop Up Play</strong> to view and reply to this message.</p>`;
+
+  return `
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+      <h2 style="color: #1e293b; border-bottom: 2px solid #8b5cf6; padding-bottom: 10px;">New Message from ${senderName}</h2>
+      ${bodyHtml}
+      <a href="${FRONTEND_URL}/#/Chat" style="background-color: #8b5cf6; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block; font-weight: bold;">Reply in Pop Up Play</a>
+      <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 30px 0;">
+      <p style="color: #94a3b8; font-size: 12px;">This is an automated email from Pop Up Play. Please do not reply to this email.</p>
+      <p style="margin-top: 16px; color: #94a3b8; font-size: 12px; line-height: 1.5;">To continue receiving email notifications, make sure your email notifications are enabled in your profile area on <a href="${FRONTEND_URL}" style="color: #8b5cf6;">Popupplay.fun</a>.</p>
+      <p style="color: #94a3b8; font-size: 12px; line-height: 1.5;">If you'd like to stop receiving email notifications, simply select "Turn Off Email Notifications" in your profile area on <a href="${FRONTEND_URL}" style="color: #8b5cf6;">Popupplay.fun</a>.</p>
+    </div>
+  `;
+}
+
 function createEmailTransport() {
   if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
     const smtpPort = parseInt(process.env.SMTP_PORT || '587', 10);
@@ -1988,29 +2024,22 @@ app.post('/api/entities/:table', authenticateUser, async (req, res) => {
 
             // Get sender display name
             const senderRes = await pool.query(
-              'SELECT display_name FROM "UserProfile" WHERE user_email = $1 LIMIT 1',
+              'SELECT display_name, name FROM "UserProfile" WHERE user_email = $1 LIMIT 1',
               [senderEmail]
             );
-            const senderName = senderRes.rows[0]?.display_name || senderEmail.split('@')[0] || 'Someone';
+            const senderProfile = senderRes.rows[0] || null;
+            const senderName = senderProfile?.display_name || senderProfile?.name || senderEmail.split('@')[0] || 'Someone';
+            const adminMessage = isAdminMessageSender(senderEmail, senderProfile);
 
             const mailOptions = {
               from: EMAIL_FROM,
               to: recipientEmail,
               subject: `New message from ${senderName} - Pop Up Play`,
-              html: `
-                <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-                  <h2 style="color: #1e293b; border-bottom: 2px solid #8b5cf6; padding-bottom: 10px;">New Message from ${senderName}</h2>
-                  <div style="background-color: #f1f5f9; padding: 15px; border-radius: 8px; margin: 20px 0;">
-                    <p style="color: #1e293b; font-style: italic; margin: 0;">"${messageContent}"</p>
-                  </div>
-                  <p style="color: #475569; margin: 20px 0;">Log in to <strong>Pop Up Play</strong> to reply to this message.</p>
-                  <a href="${FRONTEND_URL}/#/Chat" style="background-color: #8b5cf6; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block; font-weight: bold;">Reply in Pop Up Play</a>
-                  <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 30px 0;">
-                  <p style="color: #94a3b8; font-size: 12px;">This is an automated email from Pop Up Play. Please do not reply to this email.</p>
-                  <p style="margin-top: 16px; color: #94a3b8; font-size: 12px; line-height: 1.5;">To continue receiving email notifications, make sure your email notifications are enabled in your profile area on <a href="${FRONTEND_URL}" style="color: #8b5cf6;">Popupplay.fun</a>.</p>
-                  <p style="color: #94a3b8; font-size: 12px; line-height: 1.5;">If you'd like to stop receiving email notifications, simply select "Turn Off Email Notifications" in your profile area on <a href="${FRONTEND_URL}" style="color: #8b5cf6;">Popupplay.fun</a>.</p>
-                </div>
-              `,
+              html: buildChatEmailHtml({
+                senderName,
+                messageContent,
+                isAdminMessage: adminMessage,
+              }),
             };
 
             transporter.sendMail(mailOptions, (error, info) => {
@@ -2338,6 +2367,23 @@ app.post('/api/contact', async (req, res) => {
 // ============ ZIP Geocoding (server-side) ============
 
 const zipGeoCache = new Map(); // permanent in-memory cache: cacheKey → { lat, lon } | null
+const postalLookupCache = new Map(); // cacheKey → { city, state, country } | null
+
+function normalizePostalCode(zip) {
+  let clean = String(zip || '').trim().replace(/\s+/g, ' ');
+  if (!clean) return '';
+
+  // Normalize US ZIP+4 to 5-digit ZIP for better provider compatibility.
+  if (/^\d{5}-\d{4}$/.test(clean)) {
+    clean = clean.slice(0, 5);
+  }
+
+  if (/[a-zA-Z]/.test(clean)) {
+    clean = clean.toUpperCase();
+  }
+
+  return clean;
+}
 
 function _getCountryCandidates(zip, country) {
   const candidates = [];
@@ -2392,6 +2438,66 @@ async function _geocodeOneZip(cleanZip, country) {
   return null;
 }
 
+async function _lookupPostalDetails(cleanZip, country) {
+  const candidates = _getCountryCandidates(cleanZip, country);
+
+  // Try Zippopotam.us first for rich place metadata.
+  for (const cc of candidates) {
+    try {
+      const resp = await fetch(`https://api.zippopotam.us/${cc}/${encodeURIComponent(cleanZip)}`);
+      if (!resp.ok) continue;
+      const data = await resp.json();
+      const place = data?.places?.[0];
+      if (!place) continue;
+
+      const city = place['place name'] || '';
+      const state = place['state abbreviation'] || place.state || '';
+      const countryName = data?.country ||
+        (cc === 'nl' ? 'Netherlands' : cc === 'us' ? 'United States' : cc.toUpperCase());
+
+      if (city || state || countryName) {
+        return { city, state, country: countryName };
+      }
+    } catch {
+      // Continue to next candidate.
+    }
+  }
+
+  // Fallback to Nominatim.
+  for (const cc of [...candidates, '']) {
+    try {
+      const params = new URLSearchParams({
+        postalcode: cleanZip,
+        format: 'json',
+        addressdetails: '1',
+        limit: '1',
+      });
+      if (cc) params.set('country', cc);
+
+      const resp = await fetch(`https://nominatim.openstreetmap.org/search?${params.toString()}`, {
+        headers: { 'User-Agent': 'PopUpPlay/1.0' },
+      });
+      if (!resp.ok) continue;
+
+      const data = await resp.json();
+      const address = data?.[0]?.address;
+      if (!address) continue;
+
+      const city = address.city || address.town || address.village || address.municipality || address.county || '';
+      const state = address.state || address.region || address.state_district || '';
+      const countryName = address.country || '';
+
+      if (city || state || countryName) {
+        return { city, state, country: countryName };
+      }
+    } catch {
+      // Continue to next candidate.
+    }
+  }
+
+  return null;
+}
+
 /**
  * POST /api/geocode-zips
  * Body: { zips: [ { zip: "75062", country: "us" }, ... ] }
@@ -2408,7 +2514,7 @@ app.post('/api/geocode-zips', async (req, res) => {
     // Deduplicate by cache key
     const uniqueJobs = new Map(); // cacheKey → { cleanZip, country }
     for (const entry of zips) {
-      const cleanZip = String(entry?.zip || '').trim();
+      const cleanZip = normalizePostalCode(entry?.zip);
       if (!cleanZip) continue;
       const country = String(entry?.country || '').trim().toLowerCase() || 'auto';
       const key = `${cleanZip}_${country}`;
@@ -2436,7 +2542,7 @@ app.post('/api/geocode-zips', async (req, res) => {
     // Build response from cache
     const output = {};
     for (const entry of zips) {
-      const cleanZip = String(entry?.zip || '').trim();
+      const cleanZip = normalizePostalCode(entry?.zip);
       if (!cleanZip) continue;
       const country = String(entry?.country || '').trim().toLowerCase() || 'auto';
       const key = `${cleanZip}_${country}`;
@@ -2449,6 +2555,41 @@ app.post('/api/geocode-zips', async (req, res) => {
   } catch (err) {
     console.error('❌ [geocode-zips] Error:', err.message);
     res.status(500).json({ error: 'Geocoding failed' });
+  }
+});
+
+/**
+ * GET /api/postal-lookup?zip=22312&country=United%20States
+ * Returns: { city, state, country }
+ */
+app.get('/api/postal-lookup', async (req, res) => {
+  try {
+    const cleanZip = normalizePostalCode(req.query?.zip);
+    const countryRaw = String(req.query?.country || '');
+    const country = countryRaw.trim().toLowerCase() || 'auto';
+
+    if (!cleanZip) {
+      return res.status(400).json({ error: 'zip is required' });
+    }
+
+    const key = `${cleanZip}_${country}`;
+    if (postalLookupCache.has(key)) {
+      const cached = postalLookupCache.get(key);
+      if (cached) return res.json(cached);
+      return res.status(404).json({ error: 'Postal code not found' });
+    }
+
+    const details = await _lookupPostalDetails(cleanZip, countryRaw);
+    postalLookupCache.set(key, details || null);
+
+    if (!details) {
+      return res.status(404).json({ error: 'Postal code not found' });
+    }
+
+    res.json(details);
+  } catch (err) {
+    console.error('❌ [postal-lookup] Error:', err.message);
+    res.status(500).json({ error: 'Postal lookup failed' });
   }
 });
 
@@ -2953,43 +3094,24 @@ app.post('/api/email/send-chat-notification', authenticateUser, async (req, res)
       return res.status(404).json({ error: 'Recipient not found' });
     }
 
+    const senderProfileResult = await pool.query(
+      'SELECT display_name, name FROM "UserProfile" WHERE user_email = $1 LIMIT 1',
+      [senderEmail]
+    );
+    const senderProfile = senderProfileResult.rows[0] || null;
+    const resolvedSenderName = senderName || senderProfile?.display_name || senderProfile?.name || senderEmail.split('@')[0] || 'Someone';
+    const adminMessage = isAdminMessageSender(senderEmail, senderProfile);
+
     // Prepare email content - similar to forgot password style
     const mailOptions = {
       from: EMAIL_FROM,
       to: recipientEmail,
       subject: `New message from ${senderName} - Pop Up Play`,
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-          <h2 style="color: #1e293b; border-bottom: 2px solid #8b5cf6; padding-bottom: 10px;">New Message from ${senderName}</h2>
-          
-          <div style="background-color: #f1f5f9; padding: 15px; border-radius: 8px; margin: 20px 0;">
-            <p style="color: #1e293b; font-style: italic; margin: 0;">
-              "${messageContent}"
-            </p>
-          </div>
-
-          <p style="color: #475569; margin: 20px 0;">
-            Log in to <strong>Pop Up Play</strong> to reply to this message.
-          </p>
-
-          <a href="${FRONTEND_URL}/#/Chat" 
-             style="background-color: #8b5cf6; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block; font-weight: bold;">
-            Reply in Pop Up Play
-          </a>
-
-          <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 30px 0;">
-          
-          <p style="color: #94a3b8; font-size: 12px;">
-            This is an automated email from Pop Up Play. Please do not reply to this email.
-          </p>
-          <p style="margin-top: 16px; color: #94a3b8; font-size: 12px; line-height: 1.5;">
-            To continue receiving email notifications, make sure your email notifications are enabled in your profile area on <a href="${FRONTEND_URL}" style="color: #8b5cf6;">Popupplay.fun</a>.
-          </p>
-          <p style="color: #94a3b8; font-size: 12px; line-height: 1.5;">
-            If you'd like to stop receiving email notifications, simply select "Turn Off Email Notifications" in your profile area on <a href="${FRONTEND_URL}" style="color: #8b5cf6;">Popupplay.fun</a>.
-          </p>
-        </div>
-      `,
+      html: buildChatEmailHtml({
+        senderName: resolvedSenderName,
+        messageContent,
+        isAdminMessage: adminMessage,
+      }),
     };
 
     // Send email asynchronously (don't wait for completion)
@@ -3049,8 +3171,8 @@ async function getPayPalAccessToken() {
 
 function mapPayPalSubscriptionStatus(paypalStatus) {
   const normalized = String(paypalStatus || '').toUpperCase();
-  if (normalized === 'ACTIVE') return 'active';
-  if (normalized === 'APPROVAL_PENDING' || normalized === 'APPROVED') return 'pending';
+  if (normalized === 'ACTIVE' || normalized === 'APPROVED') return 'active';
+  if (normalized === 'APPROVAL_PENDING') return 'pending';
   if (normalized === 'SUSPENDED') return 'suspended';
   if (normalized === 'CANCELLED') return 'cancelled';
   if (normalized === 'EXPIRED') return 'expired';
@@ -3081,25 +3203,34 @@ async function upsertUserSubscriptionFromPayPal(userEmail, paypalSubscription) {
   const startDate = paypalSubscription?.start_time || paypalSubscription?.create_time || null;
   const endDate = paypalSubscription?.billing_info?.next_billing_time || null;
 
-  await pool.query(
-    `INSERT INTO "UserSubscription" (
-      user_email, status, start_date, end_date, paypal_subscription_id, created_date, updated_date
-    )
-    VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-    ON CONFLICT (id) DO NOTHING`,
-    [userEmail, mappedStatus, startDate, endDate, paypalSubscription.id]
+  // Check if user already has a subscription row (e.g. from a trial)
+  const existing = await pool.query(
+    `SELECT id FROM "UserSubscription" WHERE user_email = $1 ORDER BY created_date DESC LIMIT 1`,
+    [userEmail]
   );
 
-  await pool.query(
-    `UPDATE "UserSubscription"
-     SET status = $1,
-         start_date = $2,
-         end_date = $3,
-         paypal_subscription_id = $4,
-         updated_date = CURRENT_TIMESTAMP
-     WHERE user_email = $5`,
-    [mappedStatus, startDate, endDate, paypalSubscription.id, userEmail]
-  );
+  if (existing.rows.length > 0) {
+    // Update the existing row instead of creating a duplicate
+    await pool.query(
+      `UPDATE "UserSubscription"
+       SET status = $1,
+           start_date = $2,
+           end_date = $3,
+           paypal_subscription_id = $4,
+           updated_date = CURRENT_TIMESTAMP
+       WHERE id = $5`,
+      [mappedStatus, startDate, endDate, paypalSubscription.id, existing.rows[0].id]
+    );
+  } else {
+    // No existing row — insert a new one
+    await pool.query(
+      `INSERT INTO "UserSubscription" (
+        user_email, status, start_date, end_date, paypal_subscription_id, created_date, updated_date
+      )
+      VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+      [userEmail, mappedStatus, startDate, endDate, paypalSubscription.id]
+    );
+  }
 }
 
 async function verifyPayPalWebhookSignature(webhookEvent, headers) {

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { base44 } from '@/api/base44Client';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
@@ -60,104 +60,60 @@ export default function Profile() {
   });
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const zipLookupRequestRef = useRef(0);
 
   const [backUrl, setBackUrl] = useState('Home');
 
-  const resolveCountryCode = (countryValue) => {
-    const normalized = String(countryValue || '').trim().toLowerCase();
-    if (!normalized) return '';
-    const map = {
-      us: 'us',
-      usa: 'us',
-      'united states': 'us',
-      'united states of america': 'us',
-      nl: 'nl',
-      netherlands: 'nl',
-      nederland: 'nl',
-    };
-    return map[normalized] || '';
-  };
-
-  const getCountryCandidatesForPostal = (postalCode, countryValue) => {
-    const candidates = [];
-    const fromProfileCountry = resolveCountryCode(countryValue);
-    if (fromProfileCountry) candidates.push(fromProfileCountry);
-
-    if (/[a-zA-Z]/.test(postalCode)) {
-      candidates.push('nl');
-    }
-
-    candidates.push('us');
-    return [...new Set(candidates)];
-  };
-
-  const lookupWithNominatim = async (postalCode, countryHint = '') => {
-    const params = new URLSearchParams({
-      postalcode: postalCode,
-      format: 'json',
-      addressdetails: '1',
-      limit: '1',
-    });
-
-    if (countryHint) {
-      params.set('country', countryHint);
-    }
-
-    const response = await fetch(`https://nominatim.openstreetmap.org/search?${params.toString()}`);
-    if (!response.ok) return null;
-
-    const data = await response.json();
-    const address = data?.[0]?.address;
-    if (!address) return null;
-
-    const city = address.city || address.town || address.village || address.municipality || address.county || '';
-    const state = address.state || address.region || '';
-    const country = address.country || countryHint || '';
-
-    if (!city && !state && !country) return null;
-    return { city, state, country };
-  };
-  
-  // Function to fetch city, state, and country from zip code
-  const fetchCityFromZipCode = async (zipCode) => {
+  const normalizePostalCode = (zipCode) => {
     let postalCode = String(zipCode || '').trim().replace(/\s+/g, ' ');
-    if (!postalCode || postalCode.length < 4) return;
+    if (!postalCode) return '';
+
+    if (/^\d{5}-\d{4}$/.test(postalCode)) {
+      postalCode = postalCode.slice(0, 5);
+    }
+
     if (/[a-zA-Z]/.test(postalCode)) {
       postalCode = postalCode.toUpperCase();
     }
 
-    const countryCandidates = getCountryCandidatesForPostal(postalCode, formData.country);
+    return postalCode;
+  };
+  
+  // Function to fetch city, state, and country from zip code
+  const fetchCityFromZipCode = async (zipCode) => {
+    const postalCode = normalizePostalCode(zipCode);
+    const requestId = ++zipLookupRequestRef.current;
+
+    if (!postalCode || postalCode.length < 4) {
+      setFormData((prev) => ({ ...prev, city: '', state: '', country: '' }));
+      return;
+    }
 
     try {
-      for (const countryCode of countryCandidates) {
-        const response = await fetch(`https://api.zippopotam.us/${countryCode}/${encodeURIComponent(postalCode)}`);
-        if (!response.ok) continue;
+      const apiBase = getApiBaseUrl();
+      const params = new URLSearchParams({ zip: postalCode });
+      if (formData.country) params.set('country', String(formData.country));
 
-        const data = await response.json();
-        const city = data.places?.[0]?.['place name'] || '';
-        const state = data.places?.[0]?.['state abbreviation'] || data.places?.[0]?.state || '';
-        const country = data.country || (countryCode === 'nl' ? 'Netherlands' : 'United States');
-        setFormData((prev) => ({ ...prev, city, state, country }));
+      const response = await fetch(`${apiBase}/postal-lookup?${params.toString()}`);
+      if (requestId !== zipLookupRequestRef.current) return;
+
+      if (!response.ok) {
+        setFormData((prev) => ({ ...prev, city: '', state: '', country: '' }));
         return;
       }
 
-      const countryHints = [
-        formData.country,
-        ...(countryCandidates.map((code) => (code === 'nl' ? 'Netherlands' : code === 'us' ? 'United States' : ''))),
-        '',
-      ].filter(Boolean);
+      const data = await response.json();
+      if (requestId !== zipLookupRequestRef.current) return;
 
-      for (const hint of [...new Set(countryHints)]) {
-        const resolved = await lookupWithNominatim(postalCode, hint);
-        if (resolved) {
-          setFormData((prev) => ({ ...prev, ...resolved }));
-          return;
-        }
-      }
-
-      setFormData((prev) => ({ ...prev, city: '', state: '', country: '' }));
+      setFormData((prev) => ({
+        ...prev,
+        city: data?.city || '',
+        state: data?.state || '',
+        country: data?.country || '',
+      }));
     } catch (error) {
       console.error('Error fetching location data:', error);
+      if (requestId !== zipLookupRequestRef.current) return;
       setFormData((prev) => ({ ...prev, city: '', state: '', country: '' }));
     }
   };

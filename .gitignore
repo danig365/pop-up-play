@@ -28,3 +28,12 @@ dist-ssr
 *.sw?
 
 .envbackups/docker_app_inspection_*.json
+
+# Backups (large files)
+backups/*.zip
+backups/*.tar.gz
+backups/*.dump
+backups/*.sql
+backups/*.json
+backups/*.txt
+backups/*.md
