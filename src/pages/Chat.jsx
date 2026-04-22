@@ -12,6 +12,9 @@ import ChatList from '@/components/chat/ChatList';
 import ChatConversation from '@/components/chat/ChatConversation';
 import { useSubscription } from '@/lib/SubscriptionContext';
 
+const normalizeEmail = (email) => (email || '').trim().toLowerCase();
+const sanitizeEmail = (email) => (email || '').trim();
+
 export default function Chat() {
   const [user, setUser] = useState(null);
   const [selectedConversation, setSelectedConversation] = useState(null);
@@ -25,12 +28,13 @@ export default function Chat() {
     const userEmail = params.get('user');
     const fromParam = params.get('from');
     if (userEmail) {
+      const cleanUserEmail = sanitizeEmail(userEmail);
       // Store it to select match once matches are loaded
-      sessionStorage.setItem('chatWithUser', userEmail);
+      sessionStorage.setItem('chatWithUser', cleanUserEmail);
       // If coming from a profile page, return to that profile
       if (fromParam === 'profile') {
         const backToParam = params.get('backTo') || 'Menu';
-        setBackUrl(createPageUrl('Profile') + `?user=${userEmail}&back=${backToParam}`);
+        setBackUrl(createPageUrl('Profile') + `?user=${encodeURIComponent(cleanUserEmail)}&back=${backToParam}`);
       } else if (fromParam === 'onlinemembers') {
         // If coming from Online Members section
         setBackUrl(createPageUrl('OnlineMembers'));
@@ -106,7 +110,7 @@ export default function Chat() {
   // Auto-select conversation if user parameter provided
   useEffect(() => {
     const targetUser = sessionStorage.getItem('chatWithUser');
-    if (targetUser && user?.email && targetUser !== user.email) {
+    if (targetUser && user?.email && normalizeEmail(targetUser) !== normalizeEmail(user.email)) {
       setSelectedConversation(targetUser);
       sessionStorage.removeItem('chatWithUser');
     }
@@ -114,7 +118,7 @@ export default function Chat() {
 
   const { data: profiles = [] } = useQuery({
     queryKey: ['allProfiles'],
-    queryFn: () => base44.entities.UserProfile.list(),
+    queryFn: () => base44.entities.UserProfile.list('-created_date', 2000),
     refetchInterval: 30000
   });
 
@@ -204,9 +208,14 @@ export default function Chat() {
 
   }
 
-  const otherProfile = selectedConversation ? profiles.find((p) =>
-    p.user_email === selectedConversation
-  ) : null;
+  const otherProfile = selectedConversation ?
+    profiles.find((p) => normalizeEmail(p.user_email) === normalizeEmail(selectedConversation)) || {
+      user_email: selectedConversation,
+      display_name: selectedConversation.split('@')[0],
+      avatar_url: null,
+      is_popped_up: false,
+      current_city: ''
+    } : null;
 
   return (
     <div className="flex h-[100dvh] min-w-0 flex-col overflow-hidden bg-gradient-to-br from-violet-50 via-white to-rose-50">

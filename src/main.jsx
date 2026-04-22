@@ -3,6 +3,10 @@ import ReactDOM from 'react-dom/client'
 import App from '@/App.jsx'
 import '@/index.css'
 import { seedMockData } from '@/lib/mockDataGenerator'
+import { initializeAnalytics } from '@/lib/analytics'
+
+// Initialize Google Analytics
+initializeAnalytics()
 
 // Seed mock data on app load
 seedMockData()

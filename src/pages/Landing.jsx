@@ -28,7 +28,7 @@ function PlayButton({ className = '', size = 80, onClick }) {
 
 export default function Landing() {
   const [rememberMe, setRememberMe] = useState(false);
-  const [isVideoModalOpen, setIsVideoModalOpen] = useState(false);
+  const [isVideoModalOpen, setIsVideoModalOpen] = useState(true);
   const navigate = useNavigate();
 
   // Auto-redirect if age was previously confirmed
@@ -126,8 +126,9 @@ export default function Landing() {
 
       {/* ===== MOBILE LAYOUT (below md) ===== */}
       {/* Mobile play button — top right */}
-      <div className="md:hidden absolute top-6 right-6 z-20">
+      <div className="md:hidden absolute top-6 right-6 z-20 flex flex-col items-center gap-1">
         <PlayButton size={70} onClick={() => setIsVideoModalOpen(true)} />
+        <span className="text-white text-xs font-semibold tracking-wide">Play Video</span>
       </div>
 
       <div className="flex md:hidden min-h-screen relative z-10 items-center justify-center px-4 py-6">
@@ -143,9 +144,10 @@ export default function Landing() {
             style={{ background: 'rgba(0, 0, 0, 0.15)' }}
           >
 
-            <h1 className="text-xl font-bold text-white mb-5 leading-tight">
+            <h1 className="text-xl font-bold text-white mb-1 leading-tight">
               Are You Over 18 Years Of Age?
             </h1>
+            <p className="text-sm font-semibold mb-4 text-white">Sign Up for Free</p>
 
             <div className="flex flex-row items-center justify-center gap-3 mb-4">
               <button

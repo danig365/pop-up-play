@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useCallback } from 'react';
 import { base44 } from '@/api/base44Client';
 import { useQuery } from '@tanstack/react-query';
+import { trackSubscriptionEvent, trackEvent } from '@/lib/analytics';
 
 const SubscriptionContext = createContext(null);
 
@@ -15,7 +16,8 @@ const SubscriptionContext = createContext(null);
  *   AllProfiles, OnlineMembers, Chat, Reels
  * 
  * Tier 3 - GATED: Redirect to Pricing if no subscription
- *   VideoCall, Broadcast, Dashboard, BlockedUsers, AccessCodeManager, SubscriptionSettings
+ *   VideoCall, Broadcast, Dashboard, BlockedUsers, AccessCodeManager, SubscriptionSettings,
+ *   EventCenter, CurrentEvents, EventDetail
  */
 
 export const PAGE_TIERS = {
@@ -35,7 +37,6 @@ export const PAGE_TIERS = {
   Dashboard: 'open',
   Contact: 'open',
   PrivacyPolicy: 'open',
-
   // Tier 2 — Browse-only (actions blocked)
   AllProfiles: 'browse',
   OnlineMembers: 'browse',
@@ -47,6 +48,9 @@ export const PAGE_TIERS = {
   Broadcast: 'gated',
   BlockedUsers: 'gated',
   AccessCodeManager: 'gated',
+  EventCenter: 'gated',
+  CurrentEvents: 'gated',
+  EventDetail: 'gated',
 };
 
 export function SubscriptionProvider({ children }) {
@@ -100,6 +104,8 @@ export function SubscriptionProvider({ children }) {
    */
   const guardAction = useCallback((featureName = 'this feature') => {
     if (hasAccess) return true;
+    // Track paywall view
+    trackEvent('paywall_view', 'subscription', featureName);
     setPaywallFeature(featureName);
     if (typeof window !== 'undefined') {
       const currentPath = `${window.location.pathname}${window.location.search || ''}`;

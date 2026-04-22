@@ -241,6 +241,7 @@ if (dbPassword && dbPassword.trim && dbPassword.trim().length > 0) {
 
 
 const pool = new Pool(poolConfig);
+const MAX_EVENT_DURATION_DAYS = 90;
 
 function calculateDistanceMiles(lat1, lon1, lat2, lon2) {
   const R = 3959;
@@ -284,6 +285,85 @@ function getMissingRequiredProfileFields(profile) {
 
 function isRequiredProfileComplete(profile) {
   return getMissingRequiredProfileFields(profile).length === 0;
+}
+
+async function normalizeEventPayload(rawEvent = {}, { fallbackStartAt = null } = {}) {
+  const errors = [];
+
+  const title = String(rawEvent?.title || '').trim();
+  const description = String(rawEvent?.description || '').trim();
+  const imageUrl = String(rawEvent?.image_url || '').trim();
+  const address = String(rawEvent?.address || '').trim();
+  const zipCode = normalizePostalCode(rawEvent?.zip_code);
+  const cityInput = String(rawEvent?.city || '').trim();
+  const stateInput = String(rawEvent?.state || '').trim();
+  const countryInput = String(rawEvent?.country || '').trim();
+
+  const durationDays = Number(rawEvent?.duration_days);
+  const isDurationInteger = Number.isInteger(durationDays);
+  if (!title) errors.push('title');
+  if (!address) errors.push('address');
+  if (!zipCode) errors.push('zip_code');
+  if (!isDurationInteger || durationDays < 1 || durationDays > MAX_EVENT_DURATION_DAYS) {
+    errors.push('duration_days');
+  }
+
+  const startAtSource = rawEvent?.starts_at || fallbackStartAt || new Date().toISOString();
+  const startsAtDate = new Date(startAtSource);
+  if (!Number.isFinite(startsAtDate.getTime())) {
+    errors.push('starts_at');
+  }
+
+  if (errors.length > 0) {
+    return {
+      errors,
+      normalized: null,
+    };
+  }
+
+  const startsAtIso = startsAtDate.toISOString();
+  const endsAtDate = new Date(startsAtDate.getTime() + durationDays * 24 * 60 * 60 * 1000);
+  const endsAtIso = endsAtDate.toISOString();
+
+  let latitude = null;
+  let longitude = null;
+  const geocoded = await _geocodeOneZip(zipCode, countryInput);
+  if (geocoded) {
+    latitude = geocoded.lat;
+    longitude = geocoded.lon;
+  }
+
+  let city = cityInput;
+  let state = stateInput;
+  let country = countryInput;
+  if (!city || !state || !country) {
+    const postalDetails = await _lookupPostalDetails(zipCode, countryInput);
+    if (postalDetails) {
+      city = city || String(postalDetails.city || '').trim();
+      state = state || String(postalDetails.state || '').trim();
+      country = country || String(postalDetails.country || '').trim();
+    }
+  }
+
+  return {
+    errors: [],
+    normalized: {
+      title,
+      description,
+      image_url: imageUrl,
+      address,
+      zip_code: zipCode,
+      city,
+      state,
+      country,
+      latitude,
+      longitude,
+      duration_days: durationDays,
+      starts_at: startsAtIso,
+      ends_at: endsAtIso,
+      is_active: rawEvent?.is_active === false ? false : true,
+    },
+  };
 }
 
 async function ensureUserProfileExists(userEmail, displayName = '', avatarUrl = '') {
@@ -462,6 +542,171 @@ async function sendPopupProximityEmails(poppedProfile) {
     console.log(`✅ [PopupEmail] Sent nearby pop-up alerts to ${recipients.length} users`);
   } catch (error) {
     console.error('❌ [PopupEmail] Failed to send nearby pop-up alerts:', error.message);
+  }
+}
+
+const EVENT_NOTIFICATION_RADIUS_MILES = Number(process.env.EVENT_NOTIFICATION_RADIUS_MILES || 300);
+
+async function sendEventNotificationEmails(event) {
+  try {
+    let lat = Number(event.latitude);
+    let lon = Number(event.longitude);
+    const posterEmail = event.user_email;
+    const eventTitle = event.title || 'New Event';
+    const eventCity = [event.city, event.state].filter(Boolean).join(', ') || event.zip_code || 'your area';
+    const eventUrl = `${FRONTEND_URL}/#/EventDetail?id=${event.id}`;
+    const eventsUrl = `${FRONTEND_URL}/#/CurrentEvents`;
+    const startsAt = event.starts_at ? new Date(event.starts_at).toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' }) : null;
+    const endsAt = event.ends_at ? new Date(event.ends_at).toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' }) : null;
+    const dateRange = startsAt && endsAt ? `${startsAt} – ${endsAt}` : '';
+
+    // Confirmation email to the poster
+    try {
+      await transporter.sendMail({
+        from: EMAIL_FROM,
+        to: posterEmail,
+        subject: `Your event "${eventTitle}" is now live on Pop Up Play`,
+        html: `
+          <div style="font-family: Arial, sans-serif; max-width: 640px; margin: 0 auto;">
+            <h2 style="color: #1e293b; margin-bottom: 10px;">Your Event Is Live</h2>
+            <p style="color: #334155;">Your event has been posted and is now visible to members near ${eventCity}.</p>
+            <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px; margin: 16px 0;">
+              <p style="margin: 0 0 8px; color: #1e293b; font-weight: 600;">${eventTitle}</p>
+              ${dateRange ? `<p style="margin: 0 0 4px; color: #475569;">📅 ${dateRange}</p>` : ''}
+              <p style="margin: 0; color: #475569;">📍 ${eventCity}</p>
+            </div>
+            <a href="${eventUrl}"
+               style="background-color: #a21caf; color: #fff; text-decoration: none; display: inline-block; padding: 12px 18px; border-radius: 6px; font-weight: 600;">
+              View Your Event
+            </a>
+            <p style="margin-top: 22px; color: #94a3b8; font-size: 12px;">
+              You are receiving this because you created an event on <a href="${FRONTEND_URL}" style="color: #8b5cf6;">Popupplay.fun</a>.
+            </p>
+          </div>
+        `,
+      });
+      console.log(`✅ [EventEmail] Sent event confirmation to poster ${posterEmail}`);
+    } catch (selfErr) {
+      console.error('❌ [EventEmail] Failed to send confirmation to poster:', selfErr.message);
+    }
+
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+      const eventZip = normalizePostalCode(event.zip_code);
+      if (eventZip) {
+        const eventKey = `${eventZip}_auto`;
+        let eventCoords = zipGeoCache.get(eventKey);
+        if (eventCoords === undefined) {
+          eventCoords = await _geocodeOneZip(eventZip, '');
+          zipGeoCache.set(eventKey, eventCoords || null);
+        }
+        if (eventCoords) {
+          lat = Number(eventCoords.lat);
+          lon = Number(eventCoords.lon);
+        }
+      }
+    }
+
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+      console.log('ℹ️ [EventEmail] Skipping proximity emails: event has no coordinates and event ZIP could not be geocoded');
+      return;
+    }
+
+    const nearbyCandidates = await pool.query(
+      `SELECT user_email, display_name, latitude, longitude, zip_code, location
+       FROM "UserProfile"
+       WHERE user_email != $1
+         AND (
+           (latitude IS NOT NULL AND longitude IS NOT NULL)
+           OR COALESCE(NULLIF(TRIM(zip_code), ''), NULLIF(TRIM(location), '')) IS NOT NULL
+         )
+         AND COALESCE(email_notifications_enabled, true) = true`,
+      [posterEmail]
+    );
+
+    if (nearbyCandidates.rows.length === 0) return;
+
+    const recipientChecks = await Promise.all(
+      nearbyCandidates.rows.map(async (candidate) => {
+        let cLat = Number(candidate.latitude);
+        let cLon = Number(candidate.longitude);
+
+        if (!Number.isFinite(cLat) || !Number.isFinite(cLon)) {
+          const candidateZip = normalizePostalCode(candidate.zip_code || candidate.location);
+          if (!candidateZip) {
+            return null;
+          }
+
+          const key = `${candidateZip}_auto`;
+          let coords = zipGeoCache.get(key);
+          if (coords === undefined) {
+            coords = await _geocodeOneZip(candidateZip, '');
+            zipGeoCache.set(key, coords || null);
+          }
+
+          if (!coords) {
+            return null;
+          }
+
+          cLat = Number(coords.lat);
+          cLon = Number(coords.lon);
+        }
+
+        if (!Number.isFinite(cLat) || !Number.isFinite(cLon)) {
+          return null;
+        }
+
+        const isWithinRadius = calculateDistanceMiles(lat, lon, cLat, cLon) <= EVENT_NOTIFICATION_RADIUS_MILES;
+        return isWithinRadius ? candidate : null;
+      })
+    );
+
+    const recipients = recipientChecks.filter(Boolean);
+
+    if (recipients.length === 0) {
+      console.log('ℹ️ [EventEmail] No nearby users found within radius');
+      return;
+    }
+
+    await Promise.allSettled(
+      recipients.map((recipient) => {
+        const recipientName = recipient.display_name || recipient.user_email;
+        return transporter.sendMail({
+          from: EMAIL_FROM,
+          to: recipient.user_email,
+          subject: `New event near you on Pop Up Play: "${eventTitle}"`,
+          html: `
+            <div style="font-family: Arial, sans-serif; max-width: 640px; margin: 0 auto;">
+              <h2 style="color: #1e293b; margin-bottom: 10px;">New Event Near You</h2>
+              <p style="color: #334155;">Hi ${recipientName},</p>
+              <p style="color: #334155;">A new event has been posted within ${EVENT_NOTIFICATION_RADIUS_MILES} miles of your location.</p>
+              <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px; margin: 16px 0;">
+                <p style="margin: 0 0 8px; color: #1e293b; font-weight: 600;">${eventTitle}</p>
+                ${dateRange ? `<p style="margin: 0 0 4px; color: #475569;">📅 ${dateRange}</p>` : ''}
+                <p style="margin: 0; color: #475569;">📍 ${eventCity}</p>
+              </div>
+              <a href="${eventUrl}"
+                 style="background-color: #a21caf; color: #fff; text-decoration: none; display: inline-block; padding: 12px 18px; border-radius: 6px; font-weight: 600;">
+                View Event
+              </a>
+              &nbsp;
+              <a href="${eventsUrl}"
+                 style="background-color: #8b5cf6; color: #fff; text-decoration: none; display: inline-block; padding: 12px 18px; border-radius: 6px; font-weight: 600;">
+                Browse All Events
+              </a>
+              <p style="margin-top: 22px; color: #94a3b8; font-size: 12px;">
+                You are receiving this because email notifications are enabled in your profile on
+                <a href="${FRONTEND_URL}" style="color: #8b5cf6;">Popupplay.fun</a>.
+                To stop receiving these, turn off email notifications in your profile settings.
+              </p>
+            </div>
+          `,
+        });
+      })
+    );
+
+    console.log(`✅ [EventEmail] Sent event notifications to ${recipients.length} nearby users`);
+  } catch (error) {
+    console.error('❌ [EventEmail] Failed to send event notifications:', error.message);
   }
 }
 
@@ -660,6 +905,56 @@ async function runMigrations() {
       console.log('✅ ProfileVideo table ready');
     } catch (migErr) {
       console.warn('⚠️ ProfileVideo table migration note:', migErr.message);
+    }
+
+    // Create Event table if it doesn't exist
+    try {
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS "Event" (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          user_email VARCHAR(255) NOT NULL REFERENCES "User"(email) ON DELETE CASCADE,
+          title VARCHAR(255) NOT NULL,
+          description TEXT,
+          image_url TEXT,
+          address TEXT NOT NULL,
+          zip_code VARCHAR(20) NOT NULL,
+          city VARCHAR(255),
+          state VARCHAR(255),
+          country VARCHAR(255),
+          latitude DECIMAL(10, 8),
+          longitude DECIMAL(11, 8),
+          duration_days INTEGER NOT NULL,
+          starts_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          ends_at TIMESTAMP NOT NULL,
+          is_active BOOLEAN DEFAULT true,
+          created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+
+      try {
+        await pool.query(`CREATE INDEX IF NOT EXISTS idx_event_user_email ON "Event"(user_email)`);
+      } catch (e) {
+      }
+
+      try {
+        await pool.query(`CREATE INDEX IF NOT EXISTS idx_event_is_active ON "Event"(is_active)`);
+      } catch (e) {
+      }
+
+      try {
+        await pool.query(`CREATE INDEX IF NOT EXISTS idx_event_ends_at ON "Event"(ends_at)`);
+      } catch (e) {
+      }
+
+      try {
+        await pool.query(`CREATE INDEX IF NOT EXISTS idx_event_zip_code ON "Event"(zip_code)`);
+      } catch (e) {
+      }
+
+      console.log('✅ Event table ready');
+    } catch (migErr) {
+      console.warn('⚠️ Event table migration note:', migErr.message);
     }
 
     // Verify table structures
@@ -1803,13 +2098,23 @@ app.post('/api/access-code/redeem', authenticateUser, async (req, res) => {
     );
 
     if (existingSubResult.rows.length > 0) {
-      // Update existing subscription
+      // Update existing subscription.
+      // Crucially, clear paypal_subscription_id and paypal_order_id so that any
+      // delayed PayPal webhook (e.g. BILLING.SUBSCRIPTION.CANCELLED) cannot find
+      // this row and overwrite the status back to cancelled/expired.
       const subId = existingSubResult.rows[0].id;
       await pool.query(
-        'UPDATE "UserSubscription" SET status = $1, start_date = $2, end_date = $3 WHERE id = $4',
+        `UPDATE "UserSubscription"
+         SET status = $1,
+             start_date = $2,
+             end_date = $3,
+             paypal_subscription_id = NULL,
+             paypal_order_id = NULL,
+             updated_date = CURRENT_TIMESTAMP
+         WHERE id = $4`,
         ['active', new Date().toISOString(), accessCode.valid_until, subId]
       );
-      console.log(`🔑 [RedeemCode] Updated existing subscription for: ${userEmail}`);
+      console.log(`🔑 [RedeemCode] Updated existing subscription for: ${userEmail} (cleared PayPal IDs)`);
     } else {
       // Create new subscription
       await pool.query(
@@ -1856,11 +2161,11 @@ app.get('/api/users/:email', async (req, res) => {
 app.get('/api/entities/:table', authenticateUser, async (req, res) => {
   try {
     const { table } = req.params;
-    const { limit = 100, offset = 0 } = req.query;
+    const { limit = 100, offset = 0, sort } = req.query;
 
     // Validate table name (prevent SQL injection)
-    const validTables = ['User', 'UserProfile', 'UserSubscription', 'SubscriptionSettings', 
-           'Message', 'AccessCode', 'AboutVideo', 'BlockedUser', 'BroadcastMessage', 'UserSession', 'VideoSignal', 'Reel', 'ProfileVideo'];
+        const validTables = ['User', 'UserProfile', 'UserSubscription', 'SubscriptionSettings', 
+          'Message', 'AccessCode', 'AboutVideo', 'BlockedUser', 'BroadcastMessage', 'UserSession', 'VideoSignal', 'Reel', 'ProfileVideo', 'Event'];
     
     if (!validTables.includes(table)) {
       return res.status(400).json({ error: 'Invalid table name' });
@@ -1872,8 +2177,19 @@ app.get('/api/entities/:table', authenticateUser, async (req, res) => {
       return res.status(403).json({ error: 'Forbidden: admin access required to list this table' });
     }
 
+    // Parse sort parameter (e.g. "-created_date" for DESC, "created_date" for ASC)
+    let orderClause = '';
+    if (sort) {
+      const validColumns = ['created_date', 'updated_date', 'id', 'email', 'name'];
+      const desc = sort.startsWith('-');
+      const colName = desc ? sort.slice(1) : sort;
+      if (validColumns.includes(colName)) {
+        orderClause = `ORDER BY "${colName}" ${desc ? 'DESC' : 'ASC'}`;
+      }
+    }
+
     const result = await pool.query(
-      `SELECT * FROM "${table}" LIMIT $1 OFFSET $2`,
+      `SELECT * FROM "${table}" ${orderClause} LIMIT $1 OFFSET $2`,
       [limit, offset]
     );
     res.json(result.rows);
@@ -1889,8 +2205,8 @@ app.post('/api/entities/:table/filter', authenticateUser, async (req, res) => {
     const filters = req.body;
 
     // Validate table name
-    const validTables = ['User', 'UserProfile', 'UserSubscription', 'SubscriptionSettings', 
-           'Message', 'AccessCode', 'AboutVideo', 'BlockedUser', 'BroadcastMessage', 'UserSession', 'VideoSignal', 'Reel', 'ProfileVideo'];
+        const validTables = ['User', 'UserProfile', 'UserSubscription', 'SubscriptionSettings', 
+          'Message', 'AccessCode', 'AboutVideo', 'BlockedUser', 'BroadcastMessage', 'UserSession', 'VideoSignal', 'Reel', 'ProfileVideo', 'Event'];
     
     if (!validTables.includes(table)) {
       return res.status(400).json({ error: 'Invalid table name' });
@@ -1943,8 +2259,8 @@ app.post('/api/entities/:table', authenticateUser, async (req, res) => {
     console.log('-----------------------------');
 
     // Validate table name
-    const validTables = ['User', 'UserProfile', 'UserSubscription', 'SubscriptionSettings', 
-           'Message', 'AccessCode', 'AboutVideo', 'BlockedUser', 'BroadcastMessage', 'UserSession', 'VideoSignal', 'Reel', 'ProfileVideo'];
+        const validTables = ['User', 'UserProfile', 'UserSubscription', 'SubscriptionSettings', 
+          'Message', 'AccessCode', 'AboutVideo', 'BlockedUser', 'BroadcastMessage', 'UserSession', 'VideoSignal', 'Reel', 'ProfileVideo', 'Event'];
     if (!validTables.includes(table)) {
       console.error('[DEBUG ENTITY CREATE] Invalid table name:', table);
       return res.status(400).json({ error: 'Invalid table name' });
@@ -1965,6 +2281,20 @@ app.post('/api/entities/:table', authenticateUser, async (req, res) => {
           missing_fields: missingFields,
         });
       }
+    }
+
+    if (table === 'Event') {
+      const preparedEvent = await normalizeEventPayload(data);
+      if (preparedEvent.errors.length > 0) {
+        return res.status(400).json({
+          error: 'Missing or invalid event fields. Required: title, address, zip_code, duration_days (1-90).',
+          code: 'EVENT_VALIDATION_FAILED',
+          missing_fields: preparedEvent.errors,
+        });
+      }
+
+      Object.assign(data, preparedEvent.normalized);
+      data.user_email = req.authenticatedUser.email;
     }
 
     // Handle array columns for specific tables
@@ -2065,6 +2395,10 @@ app.post('/api/entities/:table', authenticateUser, async (req, res) => {
       }
     }
 
+    if (table === 'Event' && result.rows[0]) {
+      sendEventNotificationEmails(result.rows[0]);
+    }
+
     res.json(result.rows[0]);
   } catch (error) {
     console.error(`❌ [CREATE] Error for table ${req.params.table}:`, error.message);
@@ -2088,8 +2422,8 @@ app.get('/api/entities/:table/:id', authenticateUser, async (req, res) => {
     const { table, id } = req.params;
 
     // Validate table name
-    const validTables = ['User', 'UserProfile', 'UserSubscription', 'SubscriptionSettings', 
-           'Message', 'AccessCode', 'AboutVideo', 'BlockedUser', 'BroadcastMessage', 'UserSession', 'VideoSignal', 'Reel', 'ProfileVideo'];
+        const validTables = ['User', 'UserProfile', 'UserSubscription', 'SubscriptionSettings', 
+          'Message', 'AccessCode', 'AboutVideo', 'BlockedUser', 'BroadcastMessage', 'UserSession', 'VideoSignal', 'Reel', 'ProfileVideo', 'Event'];
     
     if (!validTables.includes(table)) {
       return res.status(400).json({ error: 'Invalid table name' });
@@ -2119,8 +2453,8 @@ app.put('/api/entities/:table/:id', authenticateUser, async (req, res) => {
     let previousProfile = null;
 
     // Validate table name
-    const validTables = ['User', 'UserProfile', 'UserSubscription', 'SubscriptionSettings', 
-           'Message', 'AccessCode', 'AboutVideo', 'BlockedUser', 'BroadcastMessage', 'UserSession', 'VideoSignal', 'Reel', 'ProfileVideo'];
+        const validTables = ['User', 'UserProfile', 'UserSubscription', 'SubscriptionSettings', 
+          'Message', 'AccessCode', 'AboutVideo', 'BlockedUser', 'BroadcastMessage', 'UserSession', 'VideoSignal', 'Reel', 'ProfileVideo', 'Event'];
     
     if (!validTables.includes(table)) {
       return res.status(400).json({ error: 'Invalid table name' });
@@ -2157,6 +2491,40 @@ app.put('/api/entities/:table/:id', authenticateUser, async (req, res) => {
           });
         }
       }
+    }
+
+    if (table === 'Event') {
+      const existingEventResult = await pool.query(
+        `SELECT * FROM "Event" WHERE id = $1 LIMIT 1`,
+        [id]
+      );
+
+      const existingEvent = existingEventResult.rows[0] || null;
+      if (!existingEvent) {
+        return res.status(404).json({ error: 'Record not found' });
+      }
+
+      const isOwner = existingEvent.user_email === req.authenticatedUser.email;
+      const isAdmin = req.authenticatedUser.role === 'admin';
+      if (!isOwner && !isAdmin) {
+        return res.status(403).json({ error: 'Forbidden: only the event owner or an admin can update this event' });
+      }
+
+      const mergedEvent = { ...existingEvent, ...data };
+      const preparedEvent = await normalizeEventPayload(mergedEvent, {
+        fallbackStartAt: existingEvent.starts_at,
+      });
+
+      if (preparedEvent.errors.length > 0) {
+        return res.status(400).json({
+          error: 'Missing or invalid event fields. Required: title, address, zip_code, duration_days (1-90).',
+          code: 'EVENT_VALIDATION_FAILED',
+          missing_fields: preparedEvent.errors,
+        });
+      }
+
+      Object.assign(data, preparedEvent.normalized);
+      data.user_email = existingEvent.user_email;
     }
 
     // Handle array columns for specific tables
@@ -2219,8 +2587,8 @@ app.delete('/api/entities/:table/:id', authenticateUser, async (req, res) => {
     const { table, id } = req.params;
 
     // Validate table name
-    const validTables = ['User', 'UserProfile', 'UserSubscription', 'SubscriptionSettings', 
-           'Message', 'AccessCode', 'AboutVideo', 'BlockedUser', 'BroadcastMessage', 'UserSession', 'VideoSignal', 'Reel', 'ProfileVideo'];
+        const validTables = ['User', 'UserProfile', 'UserSubscription', 'SubscriptionSettings', 
+          'Message', 'AccessCode', 'AboutVideo', 'BlockedUser', 'BroadcastMessage', 'UserSession', 'VideoSignal', 'Reel', 'ProfileVideo', 'Event'];
     
     if (!validTables.includes(table)) {
       return res.status(400).json({ error: 'Invalid table name' });
@@ -2230,6 +2598,25 @@ app.delete('/api/entities/:table/:id', authenticateUser, async (req, res) => {
     const adminOnlyDeleteTables = ['AccessCode', 'SubscriptionSettings', 'User', 'UserSubscription', 'AboutVideo', 'BroadcastMessage'];
     if (adminOnlyDeleteTables.includes(table) && req.authenticatedUser.role !== 'admin') {
       return res.status(403).json({ error: 'Forbidden: admin access required to delete records in this table' });
+    }
+
+    if (table === 'Event') {
+      const existingEventResult = await pool.query(
+        `SELECT id, user_email FROM "Event" WHERE id = $1 LIMIT 1`,
+        [id]
+      );
+
+      const existingEvent = existingEventResult.rows[0] || null;
+      if (!existingEvent) {
+        return res.status(404).json({ error: 'Record not found' });
+      }
+
+      const isOwner = existingEvent.user_email === req.authenticatedUser.email;
+      const isAdmin = req.authenticatedUser.role === 'admin';
+
+      if (!isOwner && !isAdmin) {
+        return res.status(403).json({ error: 'Forbidden: only the event owner or an admin can delete this event' });
+      }
     }
 
     const result = await pool.query(
@@ -2590,6 +2977,66 @@ app.get('/api/postal-lookup', async (req, res) => {
   } catch (err) {
     console.error('❌ [postal-lookup] Error:', err.message);
     res.status(500).json({ error: 'Postal lookup failed' });
+  }
+});
+
+/**
+ * GET /api/address-autocomplete?q=123%20Main&country=us
+ * Returns lightweight address suggestions for event creation/edit.
+ */
+app.get('/api/address-autocomplete', async (req, res) => {
+  try {
+    const q = String(req.query?.q || '').trim();
+    const country = String(req.query?.country || '').trim().toLowerCase();
+
+    if (q.length < 3) {
+      return res.json({ suggestions: [] });
+    }
+
+    const params = new URLSearchParams({
+      q,
+      format: 'json',
+      addressdetails: '1',
+      limit: '6',
+    });
+
+    if (country && country !== 'auto') {
+      params.set('countrycodes', country);
+    }
+
+    const resp = await fetch(`https://nominatim.openstreetmap.org/search?${params.toString()}`, {
+      headers: { 'User-Agent': 'PopUpPlay/1.0' },
+    });
+
+    if (!resp.ok) {
+      return res.status(502).json({ error: 'Address provider unavailable' });
+    }
+
+    const rows = await resp.json();
+    const suggestions = Array.isArray(rows)
+      ? rows.map((row) => {
+          const address = row?.address || {};
+          const city = address.city || address.town || address.village || address.municipality || '';
+          const state = address.state || address.region || '';
+          const zip = normalizePostalCode(address.postcode || '');
+          const countryName = address.country || '';
+          return {
+            display_name: row?.display_name || '',
+            address_line: [address.house_number, address.road].filter(Boolean).join(' ').trim() || row?.name || '',
+            city,
+            state,
+            zip_code: zip,
+            country: countryName,
+            latitude: Number(row?.lat),
+            longitude: Number(row?.lon),
+          };
+        }).filter((item) => item.display_name || item.address_line)
+      : [];
+
+    res.json({ suggestions });
+  } catch (err) {
+    console.error('❌ [address-autocomplete] Error:', err.message);
+    res.status(500).json({ error: 'Address autocomplete failed' });
   }
 });
 
@@ -3172,7 +3619,7 @@ async function getPayPalAccessToken() {
 function mapPayPalSubscriptionStatus(paypalStatus) {
   const normalized = String(paypalStatus || '').toUpperCase();
   if (normalized === 'ACTIVE' || normalized === 'APPROVED') return 'active';
-  if (normalized === 'APPROVAL_PENDING') return 'pending';
+  if (normalized === 'APPROVAL_PENDING') return 'active';
   if (normalized === 'SUSPENDED') return 'suspended';
   if (normalized === 'CANCELLED') return 'cancelled';
   if (normalized === 'EXPIRED') return 'expired';
@@ -3353,6 +3800,8 @@ app.post('/api/paypal/activate-subscription', authenticateUserStrict, async (req
 
     const paypalSubscription = await fetchPayPalSubscription(subscriptionID);
 
+    console.log(`🔍 [activate-subscription] PayPal status: ${paypalSubscription.status}, custom_id: ${paypalSubscription.custom_id}, user: ${userEmail}`);
+
     if (paypalSubscription.custom_id && paypalSubscription.custom_id !== userEmail) {
       return res.status(403).json({ error: 'Subscription does not belong to authenticated user' });
     }
@@ -3401,12 +3850,15 @@ app.post('/api/paypal/webhook', express.json({ type: '*/*' }), async (req, res) 
 
     const verified = await verifyPayPalWebhookSignature(req.body, req.headers);
     if (!verified) {
+      console.warn('⚠️ [PayPal Webhook] Signature verification failed');
       return res.status(401).json({ error: 'Invalid PayPal webhook signature' });
     }
 
     const eventType = req.body?.event_type;
     const resource = req.body?.resource || {};
     const subscriptionId = resource.id || resource?.billing_agreement_id;
+
+    console.log(`📩 [PayPal Webhook] Event: ${eventType}, Subscription: ${subscriptionId}`);
 
     if (!subscriptionId) {
       return res.json({ received: true });
@@ -3418,6 +3870,25 @@ app.post('/api/paypal/webhook', express.json({ type: '*/*' }), async (req, res) 
     );
 
     if (subResult.rows.length === 0) {
+      // No local record — try to create one using custom_id (user email) from PayPal
+      const userEmail = resource.custom_id || resource.subscriber?.email_address;
+      if (userEmail && eventType && eventType.startsWith('BILLING.SUBSCRIPTION.')) {
+        console.log(`📩 [PayPal Webhook] No local record found. Creating subscription for: ${userEmail}`);
+        try {
+          const paypalSub = await fetchPayPalSubscription(subscriptionId);
+          const resolvedEmail = paypalSub.custom_id || userEmail;
+          // Verify user exists
+          const userCheck = await pool.query('SELECT email FROM "User" WHERE email = $1', [resolvedEmail.trim().toLowerCase()]);
+          if (userCheck.rows.length > 0) {
+            await upsertUserSubscriptionFromPayPal(userCheck.rows[0].email, paypalSub);
+            console.log(`✅ [PayPal Webhook] Created subscription for: ${resolvedEmail}`);
+          } else {
+            console.warn(`⚠️ [PayPal Webhook] User not found in DB: ${resolvedEmail}`);
+          }
+        } catch (fetchErr) {
+          console.error(`❌ [PayPal Webhook] Failed to fetch/create subscription: ${fetchErr.message}`);
+        }
+      }
       return res.json({ received: true });
     }
 
@@ -3434,6 +3905,7 @@ app.post('/api/paypal/webhook', express.json({ type: '*/*' }), async (req, res) 
          WHERE id = $3`,
         [mappedStatus, nextBilling, localSub.id]
       );
+      console.log(`✅ [PayPal Webhook] Updated subscription ${localSub.id}: status=${mappedStatus}`);
     }
 
     return res.json({ received: true });

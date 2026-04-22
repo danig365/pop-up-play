@@ -9,7 +9,37 @@ import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { createPageUrl } from '@/utils';
 import BlockButton from '@/components/blocking/BlockButton';
 import { useSubscription } from '@/lib/SubscriptionContext';
-import { getProfileCoords, calculateDistanceMiles, bulkGeocodeProfiles } from '@/lib/zipGeocode';
+
+const EARTH_RADIUS_MILES = 3958.8;
+
+function toRadians(value) {
+  return (value * Math.PI) / 180;
+}
+
+function getLiveCoords(profile) {
+  const lat = Number(profile?.latitude);
+  const lon = Number(profile?.longitude);
+
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+    return null;
+  }
+
+  return { lat, lon };
+}
+
+function calculateGpsDistanceMiles(source, target) {
+  const dLat = toRadians(target.lat - source.lat);
+  const dLon = toRadians(target.lon - source.lon);
+  const lat1 = toRadians(source.lat);
+  const lat2 = toRadians(target.lat);
+
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+  return EARTH_RADIUS_MILES * c;
+}
 
 // State name to abbreviation mapping
 const stateMapping = {
@@ -28,7 +58,6 @@ const stateMapping = {
 export default function OnlineMembers() {
   const INITIAL_VISIBLE = 12;
   const LOAD_MORE_STEP = 12;
-  const DISTANCE_BATCH_SIZE = 30;
 
   const [user, setUser] = useState(null);
   const [userLoading, setUserLoading] = useState(true);
@@ -36,7 +65,7 @@ export default function OnlineMembers() {
   const [interestFilter, setInterestFilter] = useState('');
   const [locationFilter, setLocationFilter] = useState('');
   const [backUrl, setBackUrl] = useState('Menu');
-  const [geocodedCities, setGeocodedCities] = useState({});
+  const [liveLocationsByProfileId, setLiveLocationsByProfileId] = useState({});
   const [distanceByProfileId, setDistanceByProfileId] = useState({});
   const [visibleCount, setVisibleCount] = useState(INITIAL_VISIBLE);
   const [distanceProgress, setDistanceProgress] = useState({ resolved: 0, total: 0 });
@@ -61,7 +90,7 @@ export default function OnlineMembers() {
     setScreenNameFilter('');
     setInterestFilter('');
     setLocationFilter('');
-    setGeocodedCities({});
+    setLiveLocationsByProfileId({});
     setVisibleCount(INITIAL_VISIBLE);
     
     // Invalidate stale data but keep cache for fast re-renders
@@ -123,7 +152,7 @@ export default function OnlineMembers() {
       const profiles = await base44.entities.UserProfile.filter({ is_popped_up: true });
       return profiles;
     },
-    refetchInterval: 30000,
+    refetchInterval: 5000,
     staleTime: 3000,
     enabled: !!user?.email && !userLoading,
     gcTime: 0
@@ -152,77 +181,48 @@ export default function OnlineMembers() {
     gcTime: 0
   });
 
-  // Use existing profile city/location data instead of reverse geocoding
+  // Use live location labels from profile updates (location/city)
   useEffect(() => {
-    const newCities = {};
+    const newLocations = {};
     for (const profile of activeProfiles) {
-      if (!geocodedCities[profile.id]) {
-        const city = profile.city || profile.location || '';
-        if (city) {
-          newCities[profile.id] = city;
+      if (!liveLocationsByProfileId[profile.id]) {
+        const locationText = String(profile.location || profile.city || '').trim();
+        if (locationText) {
+          newLocations[profile.id] = locationText;
         }
       }
     }
-    if (Object.keys(newCities).length > 0) {
-      setGeocodedCities(prev => ({ ...prev, ...newCities }));
+    if (Object.keys(newLocations).length > 0) {
+      setLiveLocationsByProfileId(prev => ({ ...prev, ...newLocations }));
     }
-  }, [activeProfiles]);
+  }, [activeProfiles, liveLocationsByProfileId]);
 
-  // Progressive background distance calculation in batches (non-blocking UI)
+  // Calculate distances using live GPS coordinates only (no ZIP geocode fallback)
   useEffect(() => {
-    let cancelled = false;
+    const total = activeProfiles.length;
+    setDistanceProgress({ resolved: 0, total });
+    setDistanceByProfileId({});
 
-    const calculateDistancesProgressively = async () => {
-      if (!cancelled) {
-        setDistanceByProfileId({});
-        setDistanceProgress({ resolved: 0, total: activeProfiles.length });
-      }
+    if (!total) return;
 
-      if (!activeProfiles.length) return;
+    const currentUserProfile = activeProfiles.find(p => p.user_email === user?.email) || myProfile || null;
+    const currentUserCoords = getLiveCoords(currentUserProfile);
 
-      // Geocode current user first
-      const sourceProfile = myProfile || activeProfiles.find(p => p.user_email === user?.email) || null;
-      if (sourceProfile) {
-        await bulkGeocodeProfiles([sourceProfile]);
-      }
-      if (cancelled) return;
+    if (!currentUserCoords) {
+      setDistanceProgress({ resolved: total, total });
+      return;
+    }
 
-      const myCoords = getProfileCoords(sourceProfile);
-      if (!myCoords) {
-        if (!cancelled) setDistanceProgress({ resolved: activeProfiles.length, total: activeProfiles.length });
-        return;
-      }
+    const computed = {};
+    for (const profile of activeProfiles) {
+      const targetCoords = getLiveCoords(profile);
+      computed[profile.id] = targetCoords
+        ? calculateGpsDistanceMiles(currentUserCoords, targetCoords)
+        : null;
+    }
 
-      let processed = 0;
-
-      for (let i = 0; i < activeProfiles.length; i += DISTANCE_BATCH_SIZE) {
-        const batch = activeProfiles.slice(i, i + DISTANCE_BATCH_SIZE);
-        await bulkGeocodeProfiles(batch);
-        if (cancelled) return;
-
-        const batchResults = {};
-        for (const profile of batch) {
-          const coords = getProfileCoords(profile);
-          batchResults[profile.id] = coords
-            ? calculateDistanceMiles(myCoords.lat, myCoords.lon, coords.lat, coords.lon)
-            : null;
-        }
-
-        setDistanceByProfileId(prev => ({ ...prev, ...batchResults }));
-
-        processed += batch.length;
-        if (!cancelled) {
-          setDistanceProgress({ resolved: processed, total: activeProfiles.length });
-        }
-
-        // Yield to UI thread between batches
-        await new Promise(resolve => setTimeout(resolve, 0));
-      }
-    };
-
-    calculateDistancesProgressively();
-
-    return () => { cancelled = true; };
+    setDistanceByProfileId(computed);
+    setDistanceProgress({ resolved: total, total });
   }, [activeProfiles, myProfile, user?.email]);
 
   // Stable original order for tie-breaking during live sort
@@ -236,9 +236,9 @@ export default function OnlineMembers() {
     let profiles = activeProfiles
       .map(profile => {
         const distance = distanceByProfileId[profile.id] ?? null;
-        const gpsCity = geocodedCities[profile.id];
+        const liveLocation = liveLocationsByProfileId[profile.id] || String(profile.location || profile.city || '').trim();
         const isBlocked = blockedUsers.some(b => b.blocked_email === profile.user_email);
-        return { ...profile, distance, gpsCity, isBlocked };
+        return { ...profile, distance, liveLocation, isBlocked };
       });
 
     // Filter by screen/display name
@@ -267,7 +267,7 @@ export default function OnlineMembers() {
     if (locationFilter.trim()) {
       profiles = profiles.filter(p => {
         const searchTerm = locationFilter.trim().toLowerCase();
-        const city = (p.gpsCity || p.city || '').trim().toLowerCase();
+        const locationText = (p.liveLocation || '').trim().toLowerCase();
         const state = (p.state || '').trim().toLowerCase();
         const zip = (p.zip_code || '').trim().toLowerCase();
         const country = (p.country || '').trim().toLowerCase();
@@ -277,7 +277,7 @@ export default function OnlineMembers() {
         const matchesState = state.includes(searchTerm) || 
                             (stateAbbrev && state.includes(stateAbbrev.toLowerCase()));
         
-        return city.includes(searchTerm) || 
+        return locationText.includes(searchTerm) || 
                matchesState || 
                zip.includes(searchTerm) || 
                country.includes(searchTerm);
@@ -296,7 +296,7 @@ export default function OnlineMembers() {
     });
     
     return profiles;
-  }, [activeProfiles, distanceByProfileId, blockedUsers, screenNameFilter, interestFilter, locationFilter, geocodedCities, originalOrderMap]);
+  }, [activeProfiles, distanceByProfileId, blockedUsers, screenNameFilter, interestFilter, locationFilter, liveLocationsByProfileId, originalOrderMap]);
 
   // Reset visible count when filters or data change
   useEffect(() => {
@@ -502,10 +502,10 @@ export default function OnlineMembers() {
                       <h3 className="text-lg font-bold text-slate-800">
                         {profile.display_name}{profile.age && `, ${profile.age}`}
                       </h3>
-                      {profile.gpsCity && (
+                      {profile.liveLocation && (
                         <div className="flex items-center gap-1 text-sm text-slate-500 mt-1 flex-wrap">
                           <MapPin className="w-3 h-3 text-violet-600" />
-                          {profile.gpsCity}
+                          {profile.liveLocation}
                           {profile.distance !== null && profile.distance !== undefined && (
                             <span className="text-purple-600 font-semibold ml-1">
                               • {profile.distance.toFixed(1)} mi

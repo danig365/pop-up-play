@@ -1,5 +1,6 @@
 import React, { createContext, useState, useContext, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
+import { trackAuthEvent, trackLogout, setUserProperties } from '@/lib/analytics';
 
 const AuthContext = createContext();
 
@@ -44,6 +45,11 @@ export const AuthProvider = ({ children }) => {
       if (currentUser) {
         setUser(currentUser);
         setIsAuthenticated(true);
+        // Track login and set user properties
+        trackAuthEvent('session_resumed');
+        setUserProperties(currentUser.id || currentUser.email, {
+          'user_email': currentUser.email,
+        });
       } else {
         setUser(null);
         setIsAuthenticated(false);
@@ -58,6 +64,8 @@ export const AuthProvider = ({ children }) => {
   };
 
   const logout = (shouldRedirect = true) => {
+    // Track logout event
+    trackLogout();
     setUser(null);
     setIsAuthenticated(false);
     // Pass null to redirect to home page (logout will handle redirect)

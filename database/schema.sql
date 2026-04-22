@@ -184,6 +184,28 @@ CREATE TABLE IF NOT EXISTS "Reel" (
   updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Events table
+CREATE TABLE IF NOT EXISTS "Event" (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_email VARCHAR(255) NOT NULL REFERENCES "User"(email) ON DELETE CASCADE,
+  title VARCHAR(255) NOT NULL,
+  description TEXT,
+  image_url TEXT,
+  address TEXT NOT NULL,
+  zip_code VARCHAR(20) NOT NULL,
+  city VARCHAR(255),
+  state VARCHAR(255),
+  country VARCHAR(255),
+  latitude DECIMAL(10, 8),
+  longitude DECIMAL(11, 8),
+  duration_days INTEGER NOT NULL,
+  starts_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  ends_at TIMESTAMP NOT NULL,
+  is_active BOOLEAN DEFAULT true,
+  created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Create indexes for better query performance
 CREATE INDEX IF NOT EXISTS idx_user_email ON "User"(email);
 CREATE INDEX IF NOT EXISTS idx_userprofile_email ON "UserProfile"(user_email);
@@ -199,3 +221,7 @@ CREATE INDEX IF NOT EXISTS idx_usersession_email ON "UserSession"(user_email);
 CREATE INDEX IF NOT EXISTS idx_usersession_device ON "UserSession"(device_id);
 CREATE INDEX IF NOT EXISTS idx_reel_user_email ON "Reel"(user_email);
 CREATE INDEX IF NOT EXISTS idx_reel_created_date ON "Reel"(created_date);
+CREATE INDEX IF NOT EXISTS idx_event_user_email ON "Event"(user_email);
+CREATE INDEX IF NOT EXISTS idx_event_is_active ON "Event"(is_active);
+CREATE INDEX IF NOT EXISTS idx_event_ends_at ON "Event"(ends_at);
+CREATE INDEX IF NOT EXISTS idx_event_zip_code ON "Event"(zip_code);

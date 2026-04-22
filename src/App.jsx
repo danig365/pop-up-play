@@ -19,6 +19,7 @@ import ResetPassword from './pages/ResetPassword';
 import PrivacyPolicy from './pages/PrivacyPolicy';
 import { GoogleOAuthProvider } from '@react-oauth/google';
 import { normalizeGoogleClientId, isGoogleClientIdConfigured } from '@/lib/googleAuth';
+import usePageTracking from '@/hooks/usePageTracking';
 
 const googleClientId = normalizeGoogleClientId(import.meta.env.VITE_GOOGLE_CLIENT_ID);
 const isGoogleOAuthEnabled = isGoogleClientIdConfigured(import.meta.env.VITE_GOOGLE_CLIENT_ID);
@@ -33,6 +34,9 @@ const LayoutWrapper = ({ children, currentPageName }) => Layout ?
 
 const AuthenticatedApp = () => {
   const { isLoadingAuth, isLoadingPublicSettings, authError, isAuthenticated, navigateToLogin } = useAuth();
+  
+  // Track page views on route changes
+  usePageTracking();
 
   // Show loading spinner while checking app public settings or auth
   if (isLoadingPublicSettings || isLoadingAuth) {

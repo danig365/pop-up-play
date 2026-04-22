@@ -22,6 +22,9 @@ import SubscriptionSuccess from './pages/SubscriptionSuccess';
 import VideoCall from './pages/VideoCall';
 import OnlineMembers from './pages/OnlineMembers';
 import PrivacyPolicy from './pages/PrivacyPolicy';
+import EventCenter from './pages/EventCenter';
+import CurrentEvents from './pages/CurrentEvents';
+import EventDetail from './pages/EventDetail';
 import __Layout from './Layout.jsx';
 
 
@@ -50,6 +53,9 @@ export const PAGES = {
     "VideoCall": VideoCall,
     "OnlineMembers": OnlineMembers,
     "PrivacyPolicy": PrivacyPolicy,
+    "EventCenter": EventCenter,
+    "CurrentEvents": CurrentEvents,
+    "EventDetail": EventDetail,
 }
 
 export const pagesConfig = {

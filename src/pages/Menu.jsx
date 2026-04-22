@@ -1,13 +1,15 @@
+// @ts-nocheck
 import React from 'react';
 import { Link } from 'react-router-dom';
 import { createPageUrl } from '@/utils';
-import { MessageCircle, Heart, Users, Info, ArrowLeft, Key, CreditCard, LogOut, Flame, Send, Settings, Shield, Mail } from 'lucide-react';
+import { MessageCircle, Heart, Users, Info, ArrowLeft, Key, CreditCard, LogOut, Flame, Send, Settings, Shield, Mail, Calendar } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { motion } from 'framer-motion';
 import NotificationBadge from '@/components/notifications/NotificationBadge';
 import { useQuery } from '@tanstack/react-query';
 import { base44 } from '@/api/base44Client';
 import reelsImage from '@/assets/image-removebg-preview.png';
+import eventMenuIcon from '@/assets/event-menu-icon.svg';
 
 // Preload the reels image immediately so it renders with other icons
 const preloadImg = new Image();
@@ -74,6 +76,14 @@ export default function Menu() {
       path: 'Reels',
       color: 'bg-pink-300',
       description: 'Watch and share reels',
+      isImage: true
+    },
+    {
+      label: 'Current Events',
+      icon: eventMenuIcon,
+      path: 'CurrentEvents',
+      color: 'bg-transparent',
+      description: 'Browse and create live events',
       isImage: true
     },
     {
@@ -203,9 +213,9 @@ export default function Menu() {
                   <div className="relative">
                     <div className={`${item.color} w-16 h-16 rounded-full flex items-center justify-center overflow-hidden`}>
                       {item.isImage ? (
-                        <img src={Icon} alt={item.label} loading="eager" fetchPriority="high" className={item.label === 'Reels' ? 'w-14 h-14 object-contain' : 'w-8 h-8 object-contain'} />
+                        <img src={Icon} alt={item.label} loading="eager" fetchPriority="high" className={item.label === 'Reels' ? 'w-14 h-14 object-contain' : 'w-16 h-16 object-contain'} />
                       ) : (
-                        <Icon className="w-8 h-8 text-slate-700" />
+                        <Icon className={`w-8 h-8 ${item.iconColor || 'text-slate-700'}`} />
                       )}
                     </div>
                     {item.badge > 0 && (

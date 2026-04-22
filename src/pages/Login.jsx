@@ -187,6 +187,7 @@ export default function Login() {
             />
             
             <h1 className="text-2xl font-bold text-slate-900">Welcome to Pop Up Play</h1>
+            <p className="font-semibold mt-1 text-sm" style={{ color: '#7C3AED' }}>Sign Up for Free</p>
             <p className="text-slate-500 mt-1 text-sm">Sign in to continue</p>
           </div>
 

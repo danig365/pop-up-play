@@ -92,8 +92,9 @@ class APIEntity {
 
   async list(sortBy = '', limit = 100) {
     const headers = getAuthHeaders();
-    
-    const response = await fetch(`${API_BASE_URL}/entities/${this.tableName}?limit=${limit}`, { headers });
+    const params = new URLSearchParams({ limit: String(limit) });
+    if (sortBy) params.set('sort', sortBy);
+    const response = await fetch(`${API_BASE_URL}/entities/${this.tableName}?${params}`, { headers });
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
       throw new Error(errorData.error || `Failed to list ${this.tableName}`);
@@ -589,6 +590,7 @@ class APIBase44 {
       VideoSignal: new APIEntity('VideoSignal'),
       Reel: new APIEntity('Reel'),
       ProfileVideo: new APIEntity('ProfileVideo'),
+      Event: new APIEntity('Event'),
     };
     
     // Service role for admin operations
