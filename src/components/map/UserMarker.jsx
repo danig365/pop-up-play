@@ -87,7 +87,11 @@ export default function UserMarker({ profile, isCurrentUser, onProfileClick, unr
           e.target.openPopup();
         },
         dblclick: () => {
-          navigate(createPageUrl('Profile') + '?user=' + profile.user_email);
+          navigate(
+            createPageUrl('Profile') +
+            '?user=' + encodeURIComponent(profile.user_email) +
+            '&back=Home'
+          );
         }
       }}
     >
@@ -137,7 +141,11 @@ export default function UserMarker({ profile, isCurrentUser, onProfileClick, unr
               <button
                 onClick={(e) => {
                   e.stopPropagation();
-                  navigate(createPageUrl('Profile') + '?user=' + profile.user_email);
+                  navigate(
+                    createPageUrl('Profile') +
+                    '?user=' + encodeURIComponent(profile.user_email) +
+                    '&back=Home'
+                  );
                 }}
                 style={{ 
                   cursor: 'pointer', 

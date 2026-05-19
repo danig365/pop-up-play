@@ -13,7 +13,7 @@ import { format } from 'date-fns';
 
 export default function AccessCodeManager() {
   const [user, setUser] = useState(null);
-  const [validityDays, setValidityDays] = useState(30);
+  const [validityDays, setValidityDays] = useState('30');
   const queryClient = useQueryClient();
   const navigate = useNavigate();
 
@@ -42,8 +42,10 @@ export default function AccessCodeManager() {
   const generateMutation = useMutation({
     mutationFn: async () => {
       const code = Math.random().toString(36).substring(2, 10).toUpperCase();
+      const parsedDays = parseInt(validityDays, 10);
+      if (!parsedDays || parsedDays < 1) throw new Error('Please enter a valid number of days');
       const validUntil = new Date();
-      validUntil.setDate(validUntil.getDate() + validityDays);
+      validUntil.setDate(validUntil.getDate() + parsedDays);
       
       console.log('📝 [AccessCodeManager] Generating code:', code);
       console.log('📝 [AccessCodeManager] Valid until:', validUntil.toISOString());
@@ -131,7 +133,7 @@ export default function AccessCodeManager() {
                 type="number"
                 min="1"
                 value={validityDays}
-                onChange={(e) => setValidityDays(parseInt(e.target.value) || 30)}
+                onChange={(e) => setValidityDays(e.target.value)}
                 className="mt-1 rounded-xl border-slate-200"
               />
             </div>

@@ -4,3 +4,15 @@ dist
 *.md
 .env.local
 .vscode
+
+# Large runtime artifacts that should never be sent to docker build context
+backups
+uploads
+*.zip
+*.tar
+*.tar.gz
+
+# Local dev/runtime noise
+*.log
+coverage
+.cache

@@ -14,13 +14,14 @@ import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 // @ts-ignore
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { createPageUrl } from '@/utils';
 import { getMissingRequiredProfileFields } from '@/lib/profileCompletion';
 import AvatarUpload from '@/components/profile/AvatarUpload';
 import PhotoGallery from '@/components/profile/PhotoGallery';
 import VideoGallery from '@/components/profile/VideoGallery';
 import ReelGallery from '@/components/profile/ReelGallery';
+import { DEFAULT_AVATAR_TEMPLATE } from '@/lib/avatarTemplate';
 // @ts-ignore
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { toast } from 'sonner';
@@ -60,9 +61,17 @@ export default function Profile() {
   });
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const location = useLocation();
   const zipLookupRequestRef = useRef(0);
 
   const [backUrl, setBackUrl] = useState('Home');
+
+  const resolveBackRoute = (value) => {
+    const raw = String(value || '').trim();
+    if (!raw) return createPageUrl('Home');
+    if (raw.startsWith('/')) return raw;
+    return createPageUrl(raw);
+  };
 
   const normalizePostalCode = (zipCode) => {
     let postalCode = String(zipCode || '').trim().replace(/\s+/g, ' ');
@@ -119,22 +128,58 @@ export default function Profile() {
   };
   
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
+    const params = new URLSearchParams(location.search);
     const userParam = params.get('user');
     const backParam = params.get('back');
     const chatWithParam = params.get('chatWith');
-    
+    const eventIdParam = params.get('eventId');
     setViewingUserEmail(userParam);
+
+    // Always open profile from the top regardless of origin
+    requestAnimationFrame(() => {
+      window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+      document.documentElement.scrollTop = 0;
+      document.body.scrollTop = 0;
+    });
     
-    if (backParam) {
-      // If coming from Chat and chatWith parameter exists, open that conversation
+    const returnToParam = params.get('returnTo');
+    const fromParam = params.get('from');
+    const backToParam = params.get('backTo');
+    
+    // If returnTo is provided (full URL), use that as priority
+    if (returnToParam) {
+      try {
+        const decodedReturnTo = decodeURIComponent(returnToParam);
+        setBackUrl(decodedReturnTo);
+      } catch {
+        // Fall back to other parameters if decode fails
+        if (backToParam) {
+          setBackUrl(createPageUrl(backToParam));
+        } else if (backParam) {
+          if (backParam === 'Chat' && chatWithParam) {
+            setBackUrl(backParam + `?user=${chatWithParam}&from=profile`);
+          } else if (backParam === 'EventDetail') {
+            setBackUrl(eventIdParam ? backParam + `?id=${encodeURIComponent(eventIdParam)}` : backParam);
+          } else {
+            setBackUrl(backParam);
+          }
+        } else {
+          setBackUrl('Home');
+        }
+      }
+    } else if (backParam) {
+      // Legacy: If coming from Chat and chatWith parameter exists, open that conversation
       if (backParam === 'Chat' && chatWithParam) {
         setBackUrl(backParam + `?user=${chatWithParam}&from=profile`);
+      } else if (backParam === 'EventDetail') {
+        setBackUrl(eventIdParam ? backParam + `?id=${encodeURIComponent(eventIdParam)}` : backParam);
       } else {
         setBackUrl(backParam);
       }
+    } else {
+      setBackUrl('Home');
     }
-  }, []);
+  }, [location.search]);
 
   useEffect(() => {
     const loadUser = async () => {
@@ -484,7 +529,7 @@ export default function Profile() {
       {/* Header */}
       <header className="sticky top-0 z-50 bg-white/80 backdrop-blur-lg border-b border-slate-100">
         <div className="max-w-2xl mx-auto px-4 py-4 flex items-center justify-between">
-          <Link to={createPageUrl(backUrl)}>
+          <Link to={resolveBackRoute(backUrl)}>
             <Button variant="ghost" size="icon" className="rounded-full">
               <ArrowLeft className="w-5 h-5" />
             </Button>
@@ -529,9 +574,9 @@ export default function Profile() {
             onAvatarChange={(url) => setFormData((prev) => ({ ...prev, avatar_url: url }))} />
           ) : (
             <div className="flex flex-col items-center gap-3">
-              <div className="w-32 h-32 rounded-full overflow-hidden border-4 border-white shadow-xl">
+              <div className="w-24 h-24 rounded-2xl overflow-hidden border-4 border-white shadow-xl">
                 <img
-                  src={formData.avatar_url || `data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect fill='%23ddd6fe' width='100' height='100'/%3E%3Ccircle cx='50' cy='38' r='18' fill='%23a78bfa'/%3E%3Cellipse cx='50' cy='80' rx='28' ry='22' fill='%23a78bfa'/%3E%3C/svg%3E`}
+                  src={formData.avatar_url || DEFAULT_AVATAR_TEMPLATE}
                   alt="Profile"
                   className="w-full h-full object-cover"
                   onContextMenu={(e) => e.preventDefault()}
@@ -539,16 +584,28 @@ export default function Profile() {
                   style={{ pointerEvents: 'none', userSelect: 'none' }}
                 />
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-3">
                 <Button 
-                  onClick={() => navigate(createPageUrl('VideoCall') + '?user=' + viewingUserEmail)}
-                  className="bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white gap-2">
-                  <Video className="w-4 h-4" />
+                  onClick={() => navigate(
+                    createPageUrl('VideoCall') +
+                    '?user=' + encodeURIComponent(viewingUserEmail) +
+                    '&from=profile' +
+                    '&backTo=' + encodeURIComponent(resolveBackRoute(backUrl)) +
+                    '&returnTo=' + encodeURIComponent(window.location.pathname + window.location.search)
+                  )}
+                  className="bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white gap-2 px-4 py-2 text-base font-semibold rounded-xl shadow-lg hover:shadow-xl transition-all">
+                  <Video className="w-5 h-5" />
                   Video Verify
                 </Button>
-                <Link to={createPageUrl('Chat') + `?user=${viewingUserEmail}&from=profile&backTo=${backUrl}`}>
-                  <Button className="bg-violet-600 hover:bg-violet-700 text-white gap-2">
-                    <MessageCircle className="w-4 h-4" />
+                <Link to={
+                  createPageUrl('Chat') +
+                  `?user=${encodeURIComponent(viewingUserEmail)}` +
+                  '&from=profile' +
+                  `&backTo=${encodeURIComponent(backUrl)}` +
+                  `&returnTo=${encodeURIComponent(window.location.pathname + window.location.search)}`
+                }>
+                  <Button className="bg-gradient-to-r from-violet-600 to-purple-600 hover:from-violet-700 hover:to-purple-700 text-white gap-2 px-4 py-2 text-base font-semibold rounded-xl shadow-lg hover:shadow-xl transition-all">
+                    <MessageCircle className="w-5 h-5" />
                     Message
                   </Button>
                 </Link>
@@ -620,6 +677,8 @@ export default function Profile() {
                   <SelectContent>
                     <SelectItem value="male">Male</SelectItem>
                     <SelectItem value="female">Female</SelectItem>
+                    <SelectItem value="couple">Couple</SelectItem>
+                    <SelectItem value="transgender">Transgender</SelectItem>
                     <SelectItem value="non-binary">Non-binary</SelectItem>
                     <SelectItem value="prefer-not-to-say">Prefer not to say</SelectItem>
                   </SelectContent>
@@ -639,6 +698,7 @@ export default function Profile() {
                   <SelectContent>
                     <SelectItem value="men">Men</SelectItem>
                     <SelectItem value="women">Women</SelectItem>
+                    <SelectItem value="couple">Couple</SelectItem>
                     <SelectItem value="transgender">Transgender</SelectItem>
                     <SelectItem value="everyone">Everyone</SelectItem>
                   </SelectContent>

@@ -5,7 +5,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
 import { ArrowLeft, MessageCircle, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Link } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { getApiBaseUrl } from '@/lib/apiUrl';
 import { createPageUrl } from '@/utils';
 import ChatList from '@/components/chat/ChatList';
@@ -15,29 +15,69 @@ import { useSubscription } from '@/lib/SubscriptionContext';
 const normalizeEmail = (email) => (email || '').trim().toLowerCase();
 const sanitizeEmail = (email) => (email || '').trim();
 
+const resolveSectionBackUrl = (rawBackTo) => {
+  const fallback = createPageUrl('Menu');
+  const value = String(rawBackTo || '').trim();
+
+  if (!value) return fallback;
+  if (value.startsWith('/')) return value;
+
+  const normalized = value.toLowerCase();
+  if (normalized === 'chat' || normalized.startsWith('chat?')) {
+    return fallback;
+  }
+
+  return createPageUrl(value);
+};
+
 export default function Chat() {
   const [user, setUser] = useState(null);
   const [selectedConversation, setSelectedConversation] = useState(null);
   const [backUrl, setBackUrl] = useState(createPageUrl('Menu'));
+  const location = useLocation();
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { guardAction } = useSubscription();
+  const chatParams = new URLSearchParams(location.search);
+  const openedFromProfile = chatParams.get('from') === 'profile';
 
   // Check for user parameter in URL and determine back button destination
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
+    const params = new URLSearchParams(location.search);
     const userEmail = params.get('user');
     const fromParam = params.get('from');
+    const returnToParam = params.get('returnTo');
     if (userEmail) {
       const cleanUserEmail = sanitizeEmail(userEmail);
       // Store it to select match once matches are loaded
       sessionStorage.setItem('chatWithUser', cleanUserEmail);
-      // If coming from a profile page, return to that profile
+      // If coming from a profile page, return to that exact profile route when available.
       if (fromParam === 'profile') {
-        const backToParam = params.get('backTo') || 'Menu';
-        setBackUrl(createPageUrl('Profile') + `?user=${encodeURIComponent(cleanUserEmail)}&back=${backToParam}`);
+        const profileFallback =
+          createPageUrl('Profile') +
+          `?user=${encodeURIComponent(cleanUserEmail)}` +
+          `&back=${encodeURIComponent(params.get('backTo') || 'Home')}`;
+
+        if (returnToParam) {
+          try {
+            const decodedReturnTo = String(returnToParam);
+            if (decodedReturnTo.startsWith('/')) {
+              setBackUrl(decodedReturnTo);
+            } else {
+              setBackUrl(profileFallback);
+            }
+          } catch {
+            setBackUrl(profileFallback);
+          }
+        } else {
+          setBackUrl(profileFallback);
+        }
       } else if (fromParam === 'onlinemembers') {
         // If coming from Online Members section
         setBackUrl(createPageUrl('OnlineMembers'));
+      } else if (fromParam === 'allprofiles') {
+        // If coming from All Profiles section
+        setBackUrl(createPageUrl('AllProfiles'));
       } else {
         // If coming from URL with user param (map popup), set back to Home
         setBackUrl(createPageUrl('Home'));
@@ -46,7 +86,7 @@ export default function Chat() {
       // Otherwise, back to Menu
       setBackUrl(createPageUrl('Menu'));
     }
-  }, []);
+  }, [location.search]);
 
   useEffect(() => {
     const loadUser = async () => {
@@ -73,10 +113,16 @@ export default function Chat() {
     queryKey: ['allMessages', user?.email],
     queryFn: async () => {
       if (!user?.email) return [];
-      const messages = await base44.entities.Message.list('-created_date', 1000);
-      return messages.filter(m => 
-        (m.sender_email === user.email || m.receiver_email === user.email) &&
-        !m.deleted_for?.includes(user.email)
+      // Fetch sent and received separately so we get ALL of the current user's messages
+      // regardless of how many total messages exist in the DB (avoids the global 1000-message limit)
+      const [sent, received] = await Promise.all([
+        base44.entities.Message.filter({ sender_email: user.email }),
+        base44.entities.Message.filter({ receiver_email: user.email }),
+      ]);
+      const merged = new Map();
+      [...sent, ...received].forEach(m => merged.set(m.id, m));
+      return Array.from(merged.values()).filter(
+        m => !m.deleted_for?.includes(user.email)
       );
     },
     enabled: !!user?.email,
@@ -181,14 +227,17 @@ export default function Chat() {
       (m.receiver_email === user.email && m.sender_email === otherUserEmail)
     );
 
-    // Soft delete all messages for current user
+    // Soft delete all messages for current user.
+    // Also mark received unread messages as read so the badge count reflects reality —
+    // the badge queries filter by read: false and don't check deleted_for.
     for (const message of messagesToDelete) {
       const deletedFor = message.deleted_for || [];
-      if (!deletedFor.includes(user.email)) {
-        await base44.entities.Message.update(message.id, {
-          deleted_for: [...deletedFor, user.email]
-        });
+      const updates = { deleted_for: [...new Set([...deletedFor, user.email])] };
+      // If this user received this message and it's still unread, mark it read
+      if (message.receiver_email === user.email && !message.read) {
+        updates.read = true;
       }
+      await base44.entities.Message.update(message.id, updates);
     }
 
     // Clear selection if this was the selected conversation
@@ -196,8 +245,10 @@ export default function Chat() {
       setSelectedConversation(null);
     }
 
-    // Refresh messages
+    // Refresh messages and badge counts
     queryClient.invalidateQueries({ queryKey: ['allMessages'] });
+    queryClient.invalidateQueries({ queryKey: ['unreadMessages'] });
+    queryClient.invalidateQueries({ queryKey: ['unreadMessagesList'] });
   };
 
   if (!user) {
@@ -264,9 +315,19 @@ export default function Chat() {
                 otherProfile={otherProfile}
                 messages={conversationMessages}
                 currentUserEmail={user.email}
-                onBack={() => setSelectedConversation(null)}
+                onBack={() => {
+                  if (openedFromProfile) {
+                    navigate(backUrl);
+                    return;
+                  }
+                  setSelectedConversation(null);
+                }}
                 onSendMessage={handleSendMessage}
                 onDeleteMessage={handleDeleteMessage}
+                onMessagesRead={() => {
+                  queryClient.invalidateQueries({ queryKey: ['unreadMessages'] });
+                  queryClient.invalidateQueries({ queryKey: ['unreadMessagesList'] });
+                }}
                 isSending={sendMessageMutation.isPending} /> :
 
 

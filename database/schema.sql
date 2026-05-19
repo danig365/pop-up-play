@@ -206,6 +206,77 @@ CREATE TABLE IF NOT EXISTS "Event" (
   updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Ad Campaigns table
+CREATE TABLE IF NOT EXISTS "AdCampaign" (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_email VARCHAR(255) NOT NULL REFERENCES "User"(email) ON DELETE CASCADE,
+  business_name VARCHAR(255) NOT NULL,
+  contact_email VARCHAR(255) NOT NULL,
+  contact_number VARCHAR(50),
+  website_url TEXT NOT NULL,
+  banner_image_url TEXT,
+  duration_days INTEGER,
+  pending_duration_days INTEGER,
+  pending_amount DECIMAL(10, 2),
+  amount_paid DECIMAL(10, 2),
+  status VARCHAR(50) DEFAULT 'draft',
+  paypal_order_id VARCHAR(255),
+  paypal_payment_id VARCHAR(255),
+  starts_at TIMESTAMP,
+  ends_at TIMESTAMP,
+  created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Live Events table
+CREATE TABLE IF NOT EXISTS "LiveEvent" (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  host_email VARCHAR(255) NOT NULL REFERENCES "User"(email) ON DELETE CASCADE,
+  title VARCHAR(255) NOT NULL,
+  description TEXT,
+  thumbnail_url TEXT,
+  stream_provider VARCHAR(50) NOT NULL DEFAULT 'youtube',
+  stream_id VARCHAR(255) NOT NULL,
+  access_type VARCHAR(20) NOT NULL DEFAULT 'paid',
+  price_usd DECIMAL(10, 2) DEFAULT 0,
+  status VARCHAR(20) NOT NULL DEFAULT 'draft',
+  scheduled_at TIMESTAMP,
+  starts_at TIMESTAMP,
+  ends_at TIMESTAMP,
+  created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT liveevent_access_type_check CHECK (access_type IN ('free', 'paid')),
+  CONSTRAINT liveevent_status_check CHECK (status IN ('draft', 'upcoming', 'live', 'ended'))
+);
+
+-- Live Event Access table
+CREATE TABLE IF NOT EXISTS "LiveEventAccess" (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  event_id UUID NOT NULL REFERENCES "LiveEvent"(id) ON DELETE CASCADE,
+  user_email VARCHAR(255) NOT NULL REFERENCES "User"(email) ON DELETE CASCADE,
+  payment_status VARCHAR(50) NOT NULL DEFAULT 'active',
+  payment_provider VARCHAR(50) NOT NULL DEFAULT 'paypal',
+  provider_order_id VARCHAR(255),
+  paid_amount DECIMAL(10, 2),
+  granted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT liveeventaccess_unique_event_user UNIQUE (event_id, user_email)
+);
+
+-- Live Event Presence table
+CREATE TABLE IF NOT EXISTS "LiveEventPresence" (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  event_id UUID NOT NULL REFERENCES "LiveEvent"(id) ON DELETE CASCADE,
+  user_email VARCHAR(255) NOT NULL REFERENCES "User"(email) ON DELETE CASCADE,
+  session_id VARCHAR(255),
+  joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  last_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  left_at TIMESTAMP,
+  created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Create indexes for better query performance
 CREATE INDEX IF NOT EXISTS idx_user_email ON "User"(email);
 CREATE INDEX IF NOT EXISTS idx_userprofile_email ON "UserProfile"(user_email);
@@ -225,3 +296,16 @@ CREATE INDEX IF NOT EXISTS idx_event_user_email ON "Event"(user_email);
 CREATE INDEX IF NOT EXISTS idx_event_is_active ON "Event"(is_active);
 CREATE INDEX IF NOT EXISTS idx_event_ends_at ON "Event"(ends_at);
 CREATE INDEX IF NOT EXISTS idx_event_zip_code ON "Event"(zip_code);
+CREATE INDEX IF NOT EXISTS idx_adcampaign_user_email ON "AdCampaign"(user_email);
+CREATE INDEX IF NOT EXISTS idx_adcampaign_status ON "AdCampaign"(status);
+CREATE INDEX IF NOT EXISTS idx_adcampaign_ends_at ON "AdCampaign"(ends_at);
+CREATE INDEX IF NOT EXISTS idx_liveevent_host_email ON "LiveEvent"(host_email);
+CREATE INDEX IF NOT EXISTS idx_liveevent_status ON "LiveEvent"(status);
+CREATE INDEX IF NOT EXISTS idx_liveevent_scheduled_at ON "LiveEvent"(scheduled_at);
+CREATE INDEX IF NOT EXISTS idx_liveeventaccess_event_id ON "LiveEventAccess"(event_id);
+CREATE INDEX IF NOT EXISTS idx_liveeventaccess_user_email ON "LiveEventAccess"(user_email);
+CREATE INDEX IF NOT EXISTS idx_liveeventaccess_payment_status ON "LiveEventAccess"(payment_status);
+CREATE INDEX IF NOT EXISTS idx_liveeventpresence_event_id ON "LiveEventPresence"(event_id);
+CREATE INDEX IF NOT EXISTS idx_liveeventpresence_user_email ON "LiveEventPresence"(user_email);
+CREATE INDEX IF NOT EXISTS idx_liveeventpresence_last_seen_at ON "LiveEventPresence"(last_seen_at);
+CREATE INDEX IF NOT EXISTS idx_liveeventpresence_event_last_seen ON "LiveEventPresence"(event_id, last_seen_at);

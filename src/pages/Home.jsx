@@ -9,7 +9,7 @@ import LocationService from '@/components/location/LocationService';
 import MapSoundNotifications from '@/components/map/MapSoundNotifications';
 import { Link } from 'react-router-dom';
 import { createPageUrl } from '@/utils';
-import { User, Settings, Sparkles } from 'lucide-react';
+import { User, Settings, Sparkles, X, ExternalLink } from 'lucide-react';
 import reelsImage from '@/assets/image-removebg-preview.png';
 
 // Preload the reels image immediately
@@ -23,6 +23,9 @@ import NavigationMenu from '@/components/navigation/NavigationMenu';
 import { useSubscription } from '@/lib/SubscriptionContext';
 import { isLocationEnabled, requestCurrentLocation, setLocationEnabled } from '@/lib/locationPermission';
 import { isRequiredProfileComplete } from '@/lib/profileCompletion';
+import { getApiBaseUrl } from '@/lib/apiUrl';
+
+const API_BASE_URL = getApiBaseUrl();
 
 export default function Home() {
   const [user, setUser] = useState(null);
@@ -30,6 +33,8 @@ export default function Home() {
   const [isUpdating, setIsUpdating] = useState(false);
   const [locationEnabled, setLocationEnabledState] = useState(() => isLocationEnabled());
   const [locationError, setLocationError] = useState('');
+  const [adIndex, setAdIndex] = useState(0);
+  const [openAd, setOpenAd] = useState(null);
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const { guardAction } = useSubscription();
@@ -74,13 +79,68 @@ export default function Home() {
         receiver_email: user.email,
         read: false
       });
-      return msgs;
+      // Exclude messages the user has soft-deleted (deleted_for contains their email)
+      return Array.isArray(msgs)
+        ? msgs.filter(m => !Array.isArray(m.deleted_for) || !m.deleted_for.includes(user.email))
+        : [];
     },
     enabled: !!user?.email,
     refetchInterval: 5000
   });
   const unreadMessages = Array.isArray(unreadMessagesRaw) ? unreadMessagesRaw : [];
   const unreadCount = unreadMessages.length;
+
+  const { data: activeAds = [] } = useQuery({
+    queryKey: ['activeAdsHomepage'],
+    queryFn: async () => {
+      const resp = await fetch(`${API_BASE_URL}/ads/active`);
+      const data = await resp.json().catch(() => []);
+      if (!resp.ok) return [];
+      return Array.isArray(data) ? data : [];
+    },
+    refetchInterval: 60000,
+  });
+
+  useEffect(() => {
+    if (!Array.isArray(activeAds) || activeAds.length <= 1) {
+      setAdIndex(0);
+      return;
+    }
+
+    const timer = setInterval(() => {
+      setAdIndex((prev) => (prev + 1) % activeAds.length);
+    }, 5000);
+
+    return () => clearInterval(timer);
+  }, [activeAds]);
+
+  const currentAd = Array.isArray(activeAds) && activeAds.length > 0
+    ? activeAds[adIndex % activeAds.length]
+    : null;
+
+  const normalizeHost = (value) => String(value || '').toLowerCase().replace(/^www\./, '');
+
+  const shouldOpenAdInNewTab = (url) => {
+    try {
+      const adHost = normalizeHost(new URL(url).hostname);
+      const appHost = normalizeHost(window.location.hostname);
+      return adHost === appHost;
+    } catch {
+      return true;
+    }
+  };
+
+  const handleAdClick = (ad) => {
+    const url = ad?.website_url;
+    if (!url) return;
+
+    if (shouldOpenAdInNewTab(url)) {
+      window.open(url, '_blank', 'noopener,noreferrer');
+      return;
+    }
+
+    setOpenAd(ad);
+  };
 
   const updateProfileMutation = useMutation({
     mutationFn: async (data) => {
@@ -273,6 +333,42 @@ export default function Home() {
       {/* Main Content */}
       <main className="pt-20 pb-12 px-4">
         <div className="max-w-7xl mx-auto">
+          {currentAd && (
+            <motion.div
+              className="mb-4 max-w-3xl mx-auto w-full"
+              initial={{ opacity: 0, y: -8 }}
+              animate={{ opacity: 1, y: 0 }}
+            >
+              <button
+                type="button"
+                onClick={() => handleAdClick(currentAd)}
+                className="w-full text-left bg-gradient-to-r from-fuchsia-600 to-violet-600 rounded-2xl overflow-hidden shadow-xl hover:shadow-2xl transition-all"
+              >
+                {currentAd.banner_image_url ? (
+                  <div className="relative h-16 sm:h-24">
+                    <img src={currentAd.banner_image_url} alt={currentAd.business_name} className="w-full h-full object-cover opacity-85" />
+                    <div className="absolute inset-0 bg-black/35" />
+                    <div className="absolute inset-0 p-4 flex items-center justify-between">
+                      <div>
+                        <p className="text-white/90 text-xs uppercase tracking-wider font-semibold">Sponsored</p>
+                        <p className="text-white text-xl font-bold line-clamp-1">{currentAd.business_name}</p>
+                      </div>
+                      <span className="text-white text-sm font-semibold bg-white/20 px-3 py-1 rounded-full">Open</span>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="p-4 flex items-center justify-between">
+                    <div>
+                      <p className="text-white/90 text-xs uppercase tracking-wider font-semibold">Sponsored</p>
+                      <p className="text-white text-xl font-bold line-clamp-1">{currentAd.business_name}</p>
+                    </div>
+                    <span className="text-white text-sm font-semibold bg-white/20 px-3 py-1 rounded-full">Open</span>
+                  </div>
+                )}
+              </button>
+            </motion.div>
+          )}
+
           {/* Members Online Button */}
           <motion.div
             className="mb-6 flex flex-col items-center gap-3 max-w-sm mx-auto w-full"
@@ -284,7 +380,7 @@ export default function Home() {
                 className="w-full bg-gradient-to-r from-emerald-500 to-green-600 hover:from-emerald-600 hover:to-green-700 text-white px-5 py-3 rounded-full shadow-xl hover:shadow-2xl transition-all flex items-center gap-2 text-sm font-semibold justify-center"
                 style={{ zIndex: 1000 }}>
                 <User className="w-4 h-4" />
-                Members Popped Up ({activeUsers.length})
+                Members Popped Up on the Map ({activeUsers.length})
               </Button>
             </Link>
             <Link to={createPageUrl('Reels')} state={{ from: 'Home' }} className="w-full">
@@ -329,7 +425,11 @@ export default function Home() {
               unreadMessages={unreadMessages}
               onProfileClick={(profile) => {
                 if (!guardAction('view full profiles')) return;
-                navigate(createPageUrl('Profile') + '?user=' + profile.user_email);
+                navigate(
+                  createPageUrl('Profile') +
+                  '?user=' + encodeURIComponent(profile.user_email) +
+                  '&back=Home'
+                );
               }} />
 
             <ScrollControl />
@@ -408,6 +508,41 @@ export default function Home() {
           </motion.div>
         </div>
         </main>
-        </div>);
+
+      {openAd && (
+        <div className="fixed inset-0 z-[120] bg-black/70 flex items-center justify-center p-4">
+          <div className="w-full max-w-5xl bg-white rounded-2xl overflow-hidden shadow-2xl">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200">
+              <div>
+                <p className="text-xs text-slate-500 uppercase tracking-wider">Advertiser</p>
+                <p className="text-base font-semibold text-slate-900 line-clamp-1">{openAd.business_name}</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <a
+                  href={openAd.website_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1 text-sm text-violet-700 hover:text-violet-800"
+                >
+                  Open in new tab
+                  <ExternalLink className="w-4 h-4" />
+                </a>
+                <Button variant="ghost" size="icon" className="rounded-full" onClick={() => setOpenAd(null)}>
+                  <X className="w-5 h-5" />
+                </Button>
+              </div>
+            </div>
+            <div className="h-[70vh] bg-slate-100">
+              <iframe
+                title={`Ad website - ${openAd.business_name}`}
+                src={openAd.website_url}
+                className="w-full h-full border-0"
+                sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
+              />
+            </div>
+          </div>
+        </div>
+      )}
+      </div>);
 
 }

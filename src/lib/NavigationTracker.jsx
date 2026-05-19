@@ -26,6 +26,11 @@ export default function NavigationTracker() {
         }, '*');
     }, [location]);
 
+    // Always start new routes at the top so long pages don't reopen mid-scroll
+    useEffect(() => {
+        window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+    }, [location.pathname]);
+
     // Log user activity when navigating to a page
     useEffect(() => {
         // Extract page name from pathname

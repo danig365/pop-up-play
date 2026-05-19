@@ -362,6 +362,7 @@ async function normalizeEventPayload(rawEvent = {}, { fallbackStartAt = null } =
       starts_at: startsAtIso,
       ends_at: endsAtIso,
       is_active: rawEvent?.is_active === false ? false : true,
+      tagged_users: Array.isArray(rawEvent?.tagged_users) ? rawEvent.tagged_users : [],
     },
   };
 }
@@ -546,6 +547,132 @@ async function sendPopupProximityEmails(poppedProfile) {
 }
 
 const EVENT_NOTIFICATION_RADIUS_MILES = Number(process.env.EVENT_NOTIFICATION_RADIUS_MILES || 300);
+
+function getTaggedEventRecipientEmails(taggedUsers, ownerEmail = '') {
+  const owner = String(ownerEmail || '').trim().toLowerCase();
+  const uniqueEmails = new Set();
+
+  for (const taggedUser of Array.isArray(taggedUsers) ? taggedUsers : []) {
+    const email = String(taggedUser?.user_email || taggedUser?.email || '')
+      .trim()
+      .toLowerCase();
+
+    if (!email || email === owner) continue;
+    uniqueEmails.add(email);
+  }
+
+  return [...uniqueEmails];
+}
+
+async function sendTaggedEventEmails(event, previousTaggedUsers = []) {
+  try {
+    const ownerEmail = String(event?.user_email || '').trim().toLowerCase();
+    const currentTaggedEmails = getTaggedEventRecipientEmails(event?.tagged_users, ownerEmail);
+    const previousTaggedEmailSet = new Set(getTaggedEventRecipientEmails(previousTaggedUsers, ownerEmail));
+    const newTaggedEmails = currentTaggedEmails.filter((email) => !previousTaggedEmailSet.has(email));
+
+    if (newTaggedEmails.length === 0) {
+      return;
+    }
+
+    const posterResult = await pool.query(
+      `SELECT
+         COALESCE(
+           NULLIF(up.display_name, ''),
+           NULLIF(up.name, ''),
+           NULLIF(u.name, ''),
+           SPLIT_PART(u.email, '@', 1)
+         ) AS display_name,
+         u.email
+       FROM "User" u
+       LEFT JOIN "UserProfile" up ON LOWER(up.user_email) = LOWER(u.email)
+       WHERE LOWER(u.email) = $1
+       LIMIT 1`,
+      [ownerEmail]
+    );
+
+    const posterName =
+      posterResult.rows[0]?.display_name ||
+      posterResult.rows[0]?.email ||
+      ownerEmail ||
+      'Someone';
+
+    const recipientsResult = await pool.query(
+      `SELECT
+         LOWER(u.email) AS user_email,
+         COALESCE(
+           NULLIF(up.display_name, ''),
+           NULLIF(up.name, ''),
+           NULLIF(u.name, ''),
+           SPLIT_PART(u.email, '@', 1)
+         ) AS display_name,
+         COALESCE(up.email_notifications_enabled, true) AS email_notifications_enabled
+       FROM "User" u
+       LEFT JOIN "UserProfile" up ON LOWER(up.user_email) = LOWER(u.email)
+       WHERE LOWER(u.email) = ANY($1::text[])`,
+      [newTaggedEmails]
+    );
+
+    const recipients = recipientsResult.rows.filter((row) => row.email_notifications_enabled !== false);
+    if (recipients.length === 0) {
+      console.log('ℹ️ [TaggedEventEmail] No tagged users eligible for email notifications');
+      return;
+    }
+
+    const eventTitle = String(event?.title || 'Untitled Event').trim();
+    const eventAddress = [event?.address, event?.city, event?.state, event?.zip_code].filter(Boolean).join(', ');
+    const eventUrl = `${FRONTEND_URL}/#/EventDetail?id=${event.id}`;
+    const currentEventsUrl = `${FRONTEND_URL}/#/CurrentEvents`;
+    const startsAt = event?.starts_at
+      ? new Date(event.starts_at).toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' })
+      : null;
+    const endsAt = event?.ends_at
+      ? new Date(event.ends_at).toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' })
+      : null;
+    const dateRange = startsAt && endsAt ? `${startsAt} – ${endsAt}` : startsAt || null;
+
+    const results = await Promise.allSettled(
+      recipients.map((recipient) =>
+        transporter.sendMail({
+          from: EMAIL_FROM,
+          to: recipient.user_email,
+          subject: `${posterName} tagged you in an event on Pop Up Play`,
+          html: `
+            <div style="font-family: Arial, sans-serif; max-width: 640px; margin: 0 auto;">
+              <h2 style="color: #1e293b; margin-bottom: 10px;">You've Been Tagged In An Event</h2>
+              <p style="color: #334155;">Hi ${recipient.display_name || recipient.user_email},</p>
+              <p style="color: #334155;">${posterName} tagged you in an event on <strong>Pop Up Play</strong>.</p>
+              <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px; margin: 16px 0;">
+                <p style="margin: 0 0 8px; color: #1e293b; font-weight: 600;">${eventTitle}</p>
+                ${dateRange ? `<p style="margin: 0 0 4px; color: #475569;">📅 ${dateRange}</p>` : ''}
+                ${eventAddress ? `<p style="margin: 0; color: #475569;">📍 ${eventAddress}</p>` : ''}
+              </div>
+              <a href="${eventUrl}"
+                 style="background-color: #a21caf; color: #fff; text-decoration: none; display: inline-block; padding: 12px 18px; border-radius: 6px; font-weight: 600;">
+                View Event
+              </a>
+              &nbsp;
+              <a href="${currentEventsUrl}"
+                 style="background-color: #8b5cf6; color: #fff; text-decoration: none; display: inline-block; padding: 12px 18px; border-radius: 6px; font-weight: 600;">
+                Browse Events
+              </a>
+              <p style="margin-top: 22px; color: #94a3b8; font-size: 12px;">
+                You are receiving this because you were tagged in an event and email notifications are enabled on
+                <a href="${FRONTEND_URL}" style="color: #8b5cf6;">Popupplay.fun</a>.
+              </p>
+            </div>
+          `,
+        })
+      )
+    );
+
+    const sentCount = results.filter((result) => result.status === 'fulfilled').length;
+    const failedCount = results.length - sentCount;
+    console.log(`✅ [TaggedEventEmail] Sent ${sentCount} tagged-user event emails${failedCount > 0 ? ` (${failedCount} failed)` : ''}`);
+  } catch (error) {
+    console.error('❌ [TaggedEventEmail] Failed to send tagged event emails:', error.message);
+  }
+}
 
 async function sendEventNotificationEmails(event) {
   try {
@@ -957,6 +1084,179 @@ async function runMigrations() {
       console.warn('⚠️ Event table migration note:', migErr.message);
     }
 
+    // Create AdCampaign table if it doesn't exist
+    try {
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS "AdCampaign" (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          user_email VARCHAR(255) NOT NULL REFERENCES "User"(email) ON DELETE CASCADE,
+          business_name VARCHAR(255) NOT NULL,
+          contact_email VARCHAR(255) NOT NULL,
+          contact_number VARCHAR(50),
+          website_url TEXT NOT NULL,
+          banner_image_url TEXT,
+          duration_days INTEGER,
+          pending_duration_days INTEGER,
+          pending_amount DECIMAL(10, 2),
+          amount_paid DECIMAL(10, 2),
+          status VARCHAR(50) DEFAULT 'draft',
+          paypal_order_id VARCHAR(255),
+          paypal_payment_id VARCHAR(255),
+          starts_at TIMESTAMP,
+          ends_at TIMESTAMP,
+          created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+
+      try {
+        await pool.query(`CREATE INDEX IF NOT EXISTS idx_adcampaign_user_email ON "AdCampaign"(user_email)`);
+      } catch (e) {
+      }
+
+      try {
+        await pool.query(`CREATE INDEX IF NOT EXISTS idx_adcampaign_status ON "AdCampaign"(status)`);
+      } catch (e) {
+      }
+
+      try {
+        await pool.query(`CREATE INDEX IF NOT EXISTS idx_adcampaign_ends_at ON "AdCampaign"(ends_at)`);
+      } catch (e) {
+      }
+
+      console.log('✅ AdCampaign table ready');
+    } catch (migErr) {
+      console.warn('⚠️ AdCampaign table migration note:', migErr.message);
+    }
+
+    // Create LiveEvent table if it doesn't exist
+    try {
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS "LiveEvent" (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          host_email VARCHAR(255) NOT NULL REFERENCES "User"(email) ON DELETE CASCADE,
+          title VARCHAR(255) NOT NULL,
+          description TEXT,
+          thumbnail_url TEXT,
+          stream_provider VARCHAR(50) NOT NULL DEFAULT 'restream',
+          stream_id VARCHAR(255) NOT NULL,
+          access_type VARCHAR(20) NOT NULL DEFAULT 'paid',
+          price_usd DECIMAL(10, 2) DEFAULT 0,
+          status VARCHAR(20) NOT NULL DEFAULT 'draft',
+          scheduled_at TIMESTAMP,
+          starts_at TIMESTAMP,
+          ends_at TIMESTAMP,
+          created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          CONSTRAINT liveevent_access_type_check CHECK (access_type IN ('free', 'paid')),
+          CONSTRAINT liveevent_status_check CHECK (status IN ('draft', 'upcoming', 'live', 'ended'))
+        )
+      `);
+
+      try {
+        await pool.query(`CREATE INDEX IF NOT EXISTS idx_liveevent_host_email ON "LiveEvent"(host_email)`);
+      } catch (e) {
+      }
+
+      try {
+        await pool.query(`CREATE INDEX IF NOT EXISTS idx_liveevent_status ON "LiveEvent"(status)`);
+      } catch (e) {
+      }
+
+      try {
+        await pool.query(`CREATE INDEX IF NOT EXISTS idx_liveevent_scheduled_at ON "LiveEvent"(scheduled_at)`);
+      } catch (e) {
+      }
+
+      try {
+        await pool.query(`ALTER TABLE "LiveEvent" ALTER COLUMN stream_provider SET DEFAULT 'restream'`);
+      } catch (e) {
+      }
+
+      console.log('✅ LiveEvent table ready');
+    } catch (migErr) {
+      console.warn('⚠️ LiveEvent table migration note:', migErr.message);
+    }
+
+    // Create LiveEventAccess table if it doesn't exist
+    try {
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS "LiveEventAccess" (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          event_id UUID NOT NULL REFERENCES "LiveEvent"(id) ON DELETE CASCADE,
+          user_email VARCHAR(255) NOT NULL REFERENCES "User"(email) ON DELETE CASCADE,
+          payment_status VARCHAR(50) NOT NULL DEFAULT 'active',
+          payment_provider VARCHAR(50) NOT NULL DEFAULT 'paypal',
+          provider_order_id VARCHAR(255),
+          paid_amount DECIMAL(10, 2),
+          granted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          CONSTRAINT liveeventaccess_unique_event_user UNIQUE (event_id, user_email)
+        )
+      `);
+
+      try {
+        await pool.query(`CREATE INDEX IF NOT EXISTS idx_liveeventaccess_event_id ON "LiveEventAccess"(event_id)`);
+      } catch (e) {
+      }
+
+      try {
+        await pool.query(`CREATE INDEX IF NOT EXISTS idx_liveeventaccess_user_email ON "LiveEventAccess"(user_email)`);
+      } catch (e) {
+      }
+
+      try {
+        await pool.query(`CREATE INDEX IF NOT EXISTS idx_liveeventaccess_payment_status ON "LiveEventAccess"(payment_status)`);
+      } catch (e) {
+      }
+
+      console.log('✅ LiveEventAccess table ready');
+    } catch (migErr) {
+      console.warn('⚠️ LiveEventAccess table migration note:', migErr.message);
+    }
+
+    // Create LiveEventPresence table if it doesn't exist
+    try {
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS "LiveEventPresence" (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          event_id UUID NOT NULL REFERENCES "LiveEvent"(id) ON DELETE CASCADE,
+          user_email VARCHAR(255) NOT NULL REFERENCES "User"(email) ON DELETE CASCADE,
+          session_id VARCHAR(255),
+          joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          last_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          left_at TIMESTAMP,
+          created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+
+      try {
+        await pool.query(`CREATE INDEX IF NOT EXISTS idx_liveeventpresence_event_id ON "LiveEventPresence"(event_id)`);
+      } catch (e) {
+      }
+
+      try {
+        await pool.query(`CREATE INDEX IF NOT EXISTS idx_liveeventpresence_user_email ON "LiveEventPresence"(user_email)`);
+      } catch (e) {
+      }
+
+      try {
+        await pool.query(`CREATE INDEX IF NOT EXISTS idx_liveeventpresence_last_seen_at ON "LiveEventPresence"(last_seen_at)`);
+      } catch (e) {
+      }
+
+      try {
+        await pool.query(`CREATE INDEX IF NOT EXISTS idx_liveeventpresence_event_last_seen ON "LiveEventPresence"(event_id, last_seen_at)`);
+      } catch (e) {
+      }
+
+      console.log('✅ LiveEventPresence table ready');
+    } catch (migErr) {
+      console.warn('⚠️ LiveEventPresence table migration note:', migErr.message);
+    }
+
     // Verify table structures
     const accessCodeCols = await pool.query(`
       SELECT column_name FROM information_schema.columns 
@@ -980,6 +1280,12 @@ async function runMigrations() {
         ON CONFLICT DO NOTHING
       `, ['Basic Plan', 'Basic subscription plan', 0, 0, 'USD', '', '', false, 30, false, '{}']);
     }
+
+    // Add tagged_users column to Event table
+    try {
+      await pool.query(`ALTER TABLE "Event" ADD COLUMN IF NOT EXISTS tagged_users JSONB DEFAULT '[]'`);
+    } catch (e) { /* already exists */ }
+
   } catch (error) {
     console.error('❌ Migration error:', error.message);
   }
@@ -1166,6 +1472,67 @@ function requireAdmin(req, res, next) {
     return res.status(403).json({ error: 'Forbidden: admin access required' });
   }
   next();
+}
+
+const LIVE_EVENT_STATUSES = new Set(['draft', 'upcoming', 'live', 'ended']);
+const LIVE_EVENT_ACCESS_TYPES = new Set(['free', 'paid']);
+
+function parseOptionalTimestamp(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return '__INVALID__';
+  return date.toISOString();
+}
+
+function normalizeLiveEventInput(raw = {}, { isUpdate = false } = {}) {
+  const errors = [];
+
+  const title = String(raw.title ?? '').trim();
+  const description = String(raw.description ?? '').trim();
+  const thumbnail_url = String(raw.thumbnail_url ?? '').trim();
+  const stream_provider = String(raw.stream_provider ?? 'restream').trim().toLowerCase() || 'restream';
+  const stream_id = String(raw.stream_id ?? '').trim();
+
+  const access_type_raw = String(raw.access_type ?? 'paid').trim().toLowerCase();
+  const access_type = LIVE_EVENT_ACCESS_TYPES.has(access_type_raw) ? access_type_raw : null;
+  if (!access_type) errors.push('access_type');
+
+  const priceNumber = Number(raw.price_usd ?? 0);
+  const price_usd = Number.isFinite(priceNumber) ? Math.max(0, Number(priceNumber.toFixed(2))) : NaN;
+  if (!Number.isFinite(price_usd)) errors.push('price_usd');
+
+  const statusInput = String(raw.status ?? 'draft').trim().toLowerCase();
+  const status = LIVE_EVENT_STATUSES.has(statusInput) ? statusInput : null;
+  if (!status) errors.push('status');
+
+  const scheduled_at = parseOptionalTimestamp(raw.scheduled_at);
+  const starts_at = parseOptionalTimestamp(raw.starts_at);
+  const ends_at = parseOptionalTimestamp(raw.ends_at);
+  if (scheduled_at === '__INVALID__') errors.push('scheduled_at');
+  if (starts_at === '__INVALID__') errors.push('starts_at');
+  if (ends_at === '__INVALID__') errors.push('ends_at');
+
+  if (!isUpdate) {
+    if (!title) errors.push('title');
+    if (!stream_id) errors.push('stream_id');
+  }
+
+  return {
+    errors,
+    normalized: {
+      title,
+      description,
+      thumbnail_url,
+      stream_provider,
+      stream_id,
+      access_type,
+      price_usd: access_type === 'free' ? 0 : price_usd,
+      status,
+      scheduled_at,
+      starts_at,
+      ends_at,
+    },
+  };
 }
 
 // ============ Admin Setup Route ============
@@ -1507,19 +1874,22 @@ app.post('/api/auth/signup', async (req, res) => {
       `,
     };
 
-    transporter.sendMail(otpMailOptions, (error, info) => {
-      if (error) {
-        console.error('❌ [Signup] OTP email send failed:', error.message);
-      } else {
-        console.log('✅ [Signup] OTP email sent to:', email);
-      }
-    });
+    let emailDelivered = true;
+    try {
+      await transporter.sendMail(otpMailOptions);
+      console.log('✅ [Signup] OTP email sent to:', email);
+    } catch (emailErr) {
+      emailDelivered = false;
+      console.error('❌ [Signup] OTP email send failed:', emailErr.message);
+    }
 
     // Return success but WITHOUT a JWT token — user must verify first
     res.json({ 
       ...sanitizeUser(user.rows[0]),
       requires_verification: true,
-      message: 'Account created. Please check your email for the verification code.'
+      message: emailDelivered
+        ? 'Account created. Please check your email for the verification code.'
+        : 'Account created, but we had trouble sending the verification email. Please use "Resend Code" on the next screen or check your spam folder.'
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -1700,13 +2070,13 @@ app.post('/api/auth/resend-otp', async (req, res) => {
       `,
     };
 
-    transporter.sendMail(otpMailOptions, (error, info) => {
-      if (error) {
-        console.error('❌ [ResendOTP] Email send failed:', error.message);
-      } else {
-        console.log('✅ [ResendOTP] OTP email sent to:', email);
-      }
-    });
+    try {
+      await transporter.sendMail(otpMailOptions);
+      console.log('✅ [ResendOTP] OTP email sent to:', email);
+    } catch (emailErr) {
+      console.error('❌ [ResendOTP] Email send failed:', emailErr.message);
+      return res.status(500).json({ error: 'Failed to send verification email. Please check your email address and try again, or contact support.' });
+    }
 
     res.json({ success: true, message: 'A new verification code has been sent to your email.' });
   } catch (error) {
@@ -2146,8 +2516,9 @@ app.get('/api/users', async (req, res) => {
   }
 });
 
-app.get('/api/users/:email', async (req, res) => {
+app.get('/api/users/:email', async (req, res, next) => {
   try {
+    if (req.params.email === 'search') return next();
     const result = await pool.query('SELECT * FROM "User" WHERE email = $1', [req.params.email]);
     res.json(result.rows[0] || {});
   } catch (error) {
@@ -2302,20 +2673,27 @@ app.post('/api/entities/:table', authenticateUser, async (req, res) => {
       'UserProfile': ['interests', 'photos', 'videos'],
       'SubscriptionSettings': ['features']
     };
+    const jsonbColumns = {
+      'Event': ['tagged_users']
+    };
     const tableArrayColumns = arrayColumns[table] || [];
+    const tableJsonbColumns = jsonbColumns[table] || [];
 
     const columns = Object.keys(data);
-    const values = Object.values(data);
+    const values = Object.values(data).map((v, i) => {
+      const col = columns[i];
+      if (tableJsonbColumns.includes(col)) return JSON.stringify(v ?? []);
+      return v;
+    });
 
     // Debug: Log columns and values
     console.log('[DEBUG ENTITY CREATE] Columns:', columns);
     console.log('[DEBUG ENTITY CREATE] Values:', values);
 
-    // Build placeholders with type casting for array columns
+    // Build placeholders with type casting for array/jsonb columns
     const placeholders = columns.map((col, i) => {
-      if (tableArrayColumns.includes(col)) {
-        return `$${i + 1}::text[]`;
-      }
+      if (tableArrayColumns.includes(col)) return `$${i + 1}::text[]`;
+      if (tableJsonbColumns.includes(col)) return `$${i + 1}::jsonb`;
       return `$${i + 1}`;
     }).join(', ');
 
@@ -2397,6 +2775,7 @@ app.post('/api/entities/:table', authenticateUser, async (req, res) => {
 
     if (table === 'Event' && result.rows[0]) {
       sendEventNotificationEmails(result.rows[0]);
+      sendTaggedEventEmails(result.rows[0]);
     }
 
     res.json(result.rows[0]);
@@ -2451,6 +2830,7 @@ app.put('/api/entities/:table/:id', authenticateUser, async (req, res) => {
     const { table, id } = req.params;
     const data = req.body;
     let previousProfile = null;
+    let previousEvent = null;
 
     // Validate table name
         const validTables = ['User', 'UserProfile', 'UserSubscription', 'SubscriptionSettings', 
@@ -2499,20 +2879,25 @@ app.put('/api/entities/:table/:id', authenticateUser, async (req, res) => {
         [id]
       );
 
-      const existingEvent = existingEventResult.rows[0] || null;
-      if (!existingEvent) {
+      previousEvent = existingEventResult.rows[0] || null;
+      if (!previousEvent) {
         return res.status(404).json({ error: 'Record not found' });
       }
 
-      const isOwner = existingEvent.user_email === req.authenticatedUser.email;
+      const isOwner = previousEvent.user_email === req.authenticatedUser.email;
       const isAdmin = req.authenticatedUser.role === 'admin';
       if (!isOwner && !isAdmin) {
         return res.status(403).json({ error: 'Forbidden: only the event owner or an admin can update this event' });
       }
 
-      const mergedEvent = { ...existingEvent, ...data };
+      const mergedEvent = { ...previousEvent, ...data };
+      // Always re-derive city/state/country from the (possibly updated) ZIP code
+      // so that changing the ZIP on an existing event reflects the correct location.
+      delete mergedEvent.city;
+      delete mergedEvent.state;
+      delete mergedEvent.country;
       const preparedEvent = await normalizeEventPayload(mergedEvent, {
-        fallbackStartAt: existingEvent.starts_at,
+        fallbackStartAt: previousEvent.starts_at,
       });
 
       if (preparedEvent.errors.length > 0) {
@@ -2524,7 +2909,7 @@ app.put('/api/entities/:table/:id', authenticateUser, async (req, res) => {
       }
 
       Object.assign(data, preparedEvent.normalized);
-      data.user_email = existingEvent.user_email;
+      data.user_email = previousEvent.user_email;
     }
 
     // Handle array columns for specific tables
@@ -2533,22 +2918,23 @@ app.put('/api/entities/:table/:id', authenticateUser, async (req, res) => {
       'SubscriptionSettings': ['features'],
       'Message': ['deleted_for']
     };
+    const jsonbColumns = {
+      'Event': ['tagged_users']
+    };
     const tableArrayColumns = arrayColumns[table] || [];
+    const tableJsonbColumns = jsonbColumns[table] || [];
     
     const columns = Object.keys(data);
     const values = Object.values(data).map((value, i) => {
       const col = columns[i];
-      // Convert arrays to proper PostgreSQL array format
-      if (tableArrayColumns.includes(col) && Array.isArray(value)) {
-        return value; // Keep as array - node-postgres will handle conversion
-      }
+      if (tableArrayColumns.includes(col) && Array.isArray(value)) return value;
+      if (tableJsonbColumns.includes(col)) return JSON.stringify(value ?? []);
       return value;
     });
     
     const setClause = columns.map((col, i) => {
-      if (tableArrayColumns.includes(col)) {
-        return `"${col}" = $${i + 1}::text[]`;
-      }
+      if (tableArrayColumns.includes(col)) return `"${col}" = $${i + 1}::text[]`;
+      if (tableJsonbColumns.includes(col)) return `"${col}" = $${i + 1}::jsonb`;
       return `"${col}" = $${i + 1}`;
     }).join(', ');
 
@@ -2568,6 +2954,10 @@ app.put('/api/entities/:table/:id', authenticateUser, async (req, res) => {
       if (!wasPopped && isPopped) {
         sendPopupProximityEmails(updatedProfile);
       }
+    }
+
+    if (table === 'Event') {
+      sendTaggedEventEmails(result.rows[0], previousEvent?.tagged_users || []);
     }
 
     res.json(result.rows[0]);
@@ -2980,8 +3370,307 @@ app.get('/api/postal-lookup', async (req, res) => {
   }
 });
 
+// Search users by display_name for event tagging
+app.get('/api/users/search', authenticateUser, async (req, res) => {
+  try {
+    const q = String(req.query?.q || '').trim();
+    if (q.length < 2) return res.json([]);
+    const result = await pool.query(
+      `WITH candidates AS (
+         SELECT
+           up.user_email,
+           up.display_name AS profile_display_name,
+           up.name AS profile_name,
+           up.avatar_url,
+           u.name AS account_name,
+           true AS has_profile
+         FROM "UserProfile" up
+         LEFT JOIN "User" u ON LOWER(u.email) = LOWER(up.user_email)
+         WHERE (
+           COALESCE(up.display_name, '') ILIKE $1
+           OR COALESCE(up.name, '') ILIKE $1
+           OR up.user_email ILIKE $1
+           OR COALESCE(u.name, '') ILIKE $1
+           OR COALESCE(u.email, '') ILIKE $1
+         )
+
+         UNION ALL
+
+         SELECT
+           u.email AS user_email,
+           NULL::text AS profile_display_name,
+           NULL::text AS profile_name,
+           NULL::text AS avatar_url,
+           u.name AS account_name,
+           false AS has_profile
+         FROM "User" u
+         WHERE (
+           COALESCE(u.name, '') ILIKE $1
+           OR u.email ILIKE $1
+         )
+       ), deduped AS (
+         SELECT DISTINCT ON (LOWER(user_email))
+           user_email,
+           profile_display_name,
+           profile_name,
+           avatar_url,
+           account_name,
+           has_profile
+         FROM candidates
+         ORDER BY LOWER(user_email), has_profile DESC
+       )
+       SELECT
+         user_email,
+         COALESCE(
+           NULLIF(profile_display_name, ''),
+           NULLIF(profile_name, ''),
+           NULLIF(account_name, ''),
+           SPLIT_PART(user_email, '@', 1)
+         ) AS display_name,
+         avatar_url
+       FROM deduped
+       ORDER BY COALESCE(
+         NULLIF(profile_display_name, ''),
+         NULLIF(profile_name, ''),
+         NULLIF(account_name, ''),
+         user_email
+       ) ASC
+       LIMIT 10`,
+      [`%${q}%`]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    console.error('user-search error:', err);
+    res.status(500).json([]);
+  }
+});
+
+// ============ Live Studio (Phase 2) ============
+
+// Admin management listing
+app.get('/api/live-events/manage', authenticateUser, requireAdmin, async (req, res) => {
+  try {
+    const result = await pool.query(`SELECT * FROM "LiveEvent" ORDER BY updated_date DESC LIMIT 200`);
+
+    return res.json(result.rows || []);
+  } catch (error) {
+    console.error('❌ [live-events/manage GET] Error:', error.message);
+    return res.status(500).json({ error: 'Failed to load live events' });
+  }
+});
+
+// Create live event (admin only)
+app.post('/api/live-events/manage', authenticateUser, requireAdmin, async (req, res) => {
+  try {
+    const parsed = normalizeLiveEventInput(req.body || {}, { isUpdate: false });
+    if (parsed.errors.length > 0) {
+      return res.status(400).json({ error: 'Invalid live event payload', fields: parsed.errors });
+    }
+
+    const created = await pool.query(
+      `INSERT INTO "LiveEvent"
+       (host_email, title, description, thumbnail_url, stream_provider, stream_id, access_type, price_usd, status, scheduled_at, starts_at, ends_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+       RETURNING *`,
+      [
+        req.authenticatedUser.email,
+        parsed.normalized.title,
+        parsed.normalized.description,
+        parsed.normalized.thumbnail_url,
+        parsed.normalized.stream_provider,
+        parsed.normalized.stream_id,
+        parsed.normalized.access_type,
+        parsed.normalized.price_usd,
+        parsed.normalized.status,
+        parsed.normalized.scheduled_at,
+        parsed.normalized.starts_at,
+        parsed.normalized.ends_at,
+      ]
+    );
+
+    return res.json(created.rows[0]);
+  } catch (error) {
+    console.error('❌ [live-events/manage POST] Error:', error.message);
+    return res.status(500).json({ error: 'Failed to create live event' });
+  }
+});
+
+// Update live event (admin only)
+app.put('/api/live-events/manage/:id', authenticateUser, requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const existing = await pool.query(`SELECT * FROM "LiveEvent" WHERE id = $1 LIMIT 1`, [id]);
+    const event = existing.rows[0] || null;
+    if (!event) return res.status(404).json({ error: 'Live event not found' });
+
+    const merged = {
+      ...event,
+      ...req.body,
+    };
+    const parsed = normalizeLiveEventInput(merged, { isUpdate: true });
+    if (parsed.errors.length > 0) {
+      return res.status(400).json({ error: 'Invalid live event payload', fields: parsed.errors });
+    }
+
+    const updated = await pool.query(
+      `UPDATE "LiveEvent"
+       SET title = $1,
+           description = $2,
+           thumbnail_url = $3,
+           stream_provider = $4,
+           stream_id = $5,
+           access_type = $6,
+           price_usd = $7,
+           status = $8,
+           scheduled_at = $9,
+           starts_at = $10,
+           ends_at = $11,
+           updated_date = CURRENT_TIMESTAMP
+       WHERE id = $12
+       RETURNING *`,
+      [
+        parsed.normalized.title,
+        parsed.normalized.description,
+        parsed.normalized.thumbnail_url,
+        parsed.normalized.stream_provider,
+        parsed.normalized.stream_id,
+        parsed.normalized.access_type,
+        parsed.normalized.price_usd,
+        parsed.normalized.status,
+        parsed.normalized.scheduled_at,
+        parsed.normalized.starts_at,
+        parsed.normalized.ends_at,
+        id,
+      ]
+    );
+
+    return res.json(updated.rows[0]);
+  } catch (error) {
+    console.error('❌ [live-events/manage PUT] Error:', error.message);
+    return res.status(500).json({ error: 'Failed to update live event' });
+  }
+});
+
+// Update status only (admin only)
+app.post('/api/live-events/manage/:id/status', authenticateUser, requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const status = String(req.body?.status || '').trim().toLowerCase();
+    if (!LIVE_EVENT_STATUSES.has(status)) {
+      return res.status(400).json({ error: 'Invalid status. Use draft, upcoming, live, ended.' });
+    }
+
+    const existing = await pool.query(`SELECT * FROM "LiveEvent" WHERE id = $1 LIMIT 1`, [id]);
+    const event = existing.rows[0] || null;
+    if (!event) return res.status(404).json({ error: 'Live event not found' });
+
+    const nowIso = new Date().toISOString();
+    const updated = await pool.query(
+      `UPDATE "LiveEvent"
+       SET status = $1,
+           starts_at = CASE WHEN $1 = 'live' AND starts_at IS NULL THEN $2 ELSE starts_at END,
+           ends_at = CASE WHEN $1 = 'ended' THEN $2 ELSE ends_at END,
+           updated_date = CURRENT_TIMESTAMP
+       WHERE id = $3
+       RETURNING *`,
+      [status, nowIso, id]
+    );
+
+    return res.json(updated.rows[0]);
+  } catch (error) {
+    console.error('❌ [live-events/manage status] Error:', error.message);
+    return res.status(500).json({ error: 'Failed to update status' });
+  }
+});
+
+// Delete live event (admin only)
+app.delete('/api/live-events/manage/:id', authenticateUser, requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const existing = await pool.query(`SELECT * FROM "LiveEvent" WHERE id = $1 LIMIT 1`, [id]);
+    const event = existing.rows[0] || null;
+    if (!event) return res.status(404).json({ error: 'Live event not found' });
+
+    await pool.query(`DELETE FROM "LiveEvent" WHERE id = $1`, [id]);
+    return res.json({ success: true });
+  } catch (error) {
+    console.error('❌ [live-events/manage DELETE] Error:', error.message);
+    return res.status(500).json({ error: 'Failed to delete live event' });
+  }
+});
+
+// Public live-events listing for discovery (safe fields only)
+app.get('/api/live-events/public', async (req, res) => {
+  try {
+    const statusFilter = String(req.query?.status || '').trim().toLowerCase();
+
+    let result;
+    if (statusFilter && LIVE_EVENT_STATUSES.has(statusFilter)) {
+      result = await pool.query(
+        `SELECT id, host_email, title, description, thumbnail_url, stream_provider,
+                access_type, price_usd, status, scheduled_at, starts_at, ends_at,
+                created_date, updated_date
+         FROM "LiveEvent"
+         WHERE status = $1
+         ORDER BY
+           CASE WHEN status = 'live' THEN 0 ELSE 1 END,
+           COALESCE(starts_at, scheduled_at, created_date) ASC`,
+        [statusFilter]
+      );
+    } else {
+      result = await pool.query(
+        `SELECT id, host_email, title, description, thumbnail_url, stream_provider,
+                access_type, price_usd, status, scheduled_at, starts_at, ends_at,
+                created_date, updated_date
+         FROM "LiveEvent"
+         WHERE status IN ('upcoming', 'live')
+         ORDER BY
+           CASE WHEN status = 'live' THEN 0 ELSE 1 END,
+           COALESCE(starts_at, scheduled_at, created_date) ASC`
+      );
+    }
+
+    return res.json(result.rows || []);
+  } catch (error) {
+    console.error('❌ [live-events/public GET] Error:', error.message);
+    return res.status(500).json({ error: 'Failed to load live events' });
+  }
+});
+
+// Public live-event detail for discovery (safe fields only)
+app.get('/api/live-events/public/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await pool.query(
+      `SELECT le.id, le.host_email, le.title, le.description, le.thumbnail_url, le.stream_provider,
+              le.access_type, le.price_usd, le.status, le.scheduled_at, le.starts_at, le.ends_at,
+              le.created_date, le.updated_date,
+              up.display_name AS host_display_name,
+              up.avatar_url AS host_avatar_url
+       FROM "LiveEvent" le
+       LEFT JOIN "UserProfile" up ON up.user_email = le.host_email
+       WHERE le.id = $1
+       LIMIT 1`,
+      [id]
+    );
+
+    const event = result.rows[0] || null;
+    if (!event) {
+      return res.status(404).json({ error: 'Live event not found' });
+    }
+
+    return res.json(event);
+  } catch (error) {
+    console.error('❌ [live-events/public/:id GET] Error:', error.message);
+    return res.status(500).json({ error: 'Failed to load live event' });
+  }
+});
+
 /**
  * GET /api/address-autocomplete?q=123%20Main&country=us
+ */
+
+/**
  * Returns lightweight address suggestions for event creation/edit.
  */
 app.get('/api/address-autocomplete', async (req, res) => {
@@ -3708,7 +4397,647 @@ async function verifyPayPalWebhookSignature(webhookEvent, headers) {
   return data?.verification_status === 'SUCCESS';
 }
 
+const AD_DURATION_OPTIONS = [30, 60, 90, 365];
+const AD_PRICING_USD = {
+  30: Number(process.env.AD_PRICE_30_DAYS || 49),
+  60: Number(process.env.AD_PRICE_60_DAYS || 89),
+  90: Number(process.env.AD_PRICE_90_DAYS || 129),
+  365: Number(process.env.AD_PRICE_365_DAYS || 399),
+};
+
+function getAdPriceForDuration(durationDays) {
+  const days = Number(durationDays);
+  if (!AD_DURATION_OPTIONS.includes(days)) return null;
+  const amount = AD_PRICING_USD[days];
+  if (!Number.isFinite(amount) || amount <= 0) return null;
+  return Number(amount.toFixed(2));
+}
+
+function normalizeWebsiteUrl(rawUrl) {
+  const trimmed = String(rawUrl || '').trim();
+  if (!trimmed) return '';
+  const withScheme = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+  try {
+    const parsed = new URL(withScheme);
+    return parsed.toString();
+  } catch {
+    return '';
+  }
+}
+
+function isReasonableEmail(value) {
+  const email = String(value || '').trim();
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+
+async function createPayPalAdOrder({ amount, userEmail, adId, durationDays }) {
+  const accessToken = await getPayPalAccessToken();
+  const orderPayload = {
+    intent: 'CAPTURE',
+    purchase_units: [
+      {
+        custom_id: `${userEmail}|ad:${adId}|days:${durationDays}`,
+        amount: {
+          currency_code: 'USD',
+          value: Number(amount).toFixed(2),
+        },
+        description: `Pop Up Play Ad Campaign (${durationDays} days)`,
+      },
+    ],
+    application_context: {
+      brand_name: 'Pop-Up Play',
+      user_action: 'PAY_NOW',
+      landing_page: 'BILLING',
+      return_url: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/#/AdCenter?payment=success&adId=${adId}`,
+      cancel_url: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/#/AdCenter?payment=cancelled&adId=${adId}`,
+    },
+  };
+
+  const response = await fetch(`${PAYPAL_API_BASE}/v2/checkout/orders`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(orderPayload),
+  });
+
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const issue = data?.details?.[0]?.issue || data?.name || 'PAYPAL_CREATE_AD_ORDER_FAILED';
+    const err = new Error(data?.message || 'Failed to create PayPal ad order');
+    err.code = issue;
+    err.debug_id = data?.debug_id;
+    throw err;
+  }
+
+  return data;
+}
+
+async function capturePayPalAdOrder(orderId) {
+  const accessToken = await getPayPalAccessToken();
+  const response = await fetch(`${PAYPAL_API_BASE}/v2/checkout/orders/${orderId}/capture`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+  });
+
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const issue = data?.details?.[0]?.issue || data?.name || 'PAYPAL_CAPTURE_AD_ORDER_FAILED';
+    const err = new Error(data?.message || 'Failed to capture PayPal ad order');
+    err.code = issue;
+    err.debug_id = data?.debug_id;
+    throw err;
+  }
+
+  return data;
+}
+
+async function createPayPalLiveOrder({ amount, userEmail, liveEventId, title }) {
+  const accessToken = await getPayPalAccessToken();
+  const orderPayload = {
+    intent: 'CAPTURE',
+    purchase_units: [
+      {
+        custom_id: `${userEmail}|live:${liveEventId}`,
+        amount: {
+          currency_code: 'USD',
+          value: Number(amount).toFixed(2),
+        },
+        description: `Pop Up Play Live Access: ${title || 'Live Event'}`,
+      },
+    ],
+    application_context: {
+      brand_name: 'Pop-Up Play',
+      user_action: 'PAY_NOW',
+      landing_page: 'BILLING',
+      return_url: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/#/LiveEventDetail?payment=success&id=${liveEventId}`,
+      cancel_url: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/#/LiveEventDetail?payment=cancelled&id=${liveEventId}`,
+    },
+  };
+
+  const response = await fetch(`${PAYPAL_API_BASE}/v2/checkout/orders`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(orderPayload),
+  });
+
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const issue = data?.details?.[0]?.issue || data?.name || 'PAYPAL_CREATE_LIVE_ORDER_FAILED';
+    const err = new Error(data?.message || 'Failed to create PayPal live order');
+    err.code = issue;
+    err.debug_id = data?.debug_id;
+    throw err;
+  }
+
+  return data;
+}
+
+async function capturePayPalLiveOrder(orderId) {
+  const accessToken = await getPayPalAccessToken();
+  const response = await fetch(`${PAYPAL_API_BASE}/v2/checkout/orders/${orderId}/capture`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+  });
+
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const issue = data?.details?.[0]?.issue || data?.name || 'PAYPAL_CAPTURE_LIVE_ORDER_FAILED';
+    const err = new Error(data?.message || 'Failed to capture PayPal live order');
+    err.code = issue;
+    err.debug_id = data?.debug_id;
+    throw err;
+  }
+
+  return data;
+}
+
+function getLiveEmbedUrl(streamProvider, streamId) {
+  const provider = String(streamProvider || 'restream').trim().toLowerCase();
+  const cleanId = String(streamId || '').trim();
+  if (!cleanId) return '';
+
+  if (provider === 'youtube' || provider === 'youtube_live') {
+    return `https://www.youtube.com/embed/${encodeURIComponent(cleanId)}?autoplay=1&rel=0&modestbranding=1`;
+  }
+
+  if (provider === 'restream') {
+    if (cleanId.startsWith('http://') || cleanId.startsWith('https://')) {
+      try {
+        const parsed = new URL(cleanId);
+        const host = String(parsed.hostname || '').toLowerCase();
+        if (host === 'restream.io' || host === 'www.restream.io') {
+          return parsed.toString();
+        }
+      } catch {
+        return '';
+      }
+    }
+
+    return `https://restream.io/player/${encodeURIComponent(cleanId)}`;
+  }
+
+  // Unknown provider fallback to a safe, non-executable string
+  return '';
+}
+
+async function canUserAccessLiveEvent(event, authenticatedUser) {
+  const userEmail = authenticatedUser?.email;
+  if (!event || !userEmail) return false;
+
+  const isAdmin = authenticatedUser.role === 'admin';
+  const isHost = event.host_email === userEmail;
+  if (isAdmin || isHost) return true;
+
+  if (event.access_type === 'free') return true;
+
+  const accessResult = await pool.query(
+    `SELECT id FROM "LiveEventAccess"
+     WHERE event_id = $1 AND user_email = $2 AND payment_status = 'active'
+     LIMIT 1`,
+    [event.id, userEmail]
+  );
+  return !!accessResult.rows[0];
+}
+
 // Create recurring PayPal Subscription
+
+// Access check for live event (free bypass + paid validation)
+app.get('/api/live-events/:id/access', authenticateUser, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userEmail = req.authenticatedUser.email;
+
+    const eventResult = await pool.query(`SELECT * FROM "LiveEvent" WHERE id = $1 LIMIT 1`, [id]);
+    const event = eventResult.rows[0] || null;
+    if (!event) {
+      return res.status(404).json({ error: 'Live event not found' });
+    }
+
+    const isAdmin = req.authenticatedUser.role === 'admin';
+    const isHost = event.host_email === userEmail;
+    if (isAdmin || isHost) {
+      return res.json({
+        event_id: id,
+        access_type: event.access_type,
+        price_usd: Number(event.price_usd || 0),
+        hasAccess: true,
+        requiresPayment: false,
+        reason: isAdmin ? 'admin' : 'host',
+      });
+    }
+
+    if (event.access_type === 'free') {
+      return res.json({
+        event_id: id,
+        access_type: event.access_type,
+        price_usd: 0,
+        hasAccess: true,
+        requiresPayment: false,
+        reason: 'free_event',
+      });
+    }
+
+    const accessResult = await pool.query(
+      `SELECT * FROM "LiveEventAccess"
+       WHERE event_id = $1 AND user_email = $2 AND payment_status = 'active'
+       LIMIT 1`,
+      [id, userEmail]
+    );
+
+    const hasAccess = !!accessResult.rows[0];
+    return res.json({
+      event_id: id,
+      access_type: event.access_type,
+      price_usd: Number(event.price_usd || 0),
+      hasAccess,
+      requiresPayment: !hasAccess,
+      reason: hasAccess ? 'paid_access_active' : 'payment_required',
+    });
+  } catch (error) {
+    console.error('❌ [live-events/:id/access GET] Error:', error.message);
+    return res.status(500).json({ error: 'Failed to verify access' });
+  }
+});
+
+// Watch-session endpoint: returns embed payload only for authorized users
+app.get('/api/live-events/:id/watch-session', authenticateUser, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userEmail = req.authenticatedUser.email;
+
+    const eventResult = await pool.query(
+      `SELECT id, host_email, title, stream_provider, stream_id, access_type, price_usd, status
+       FROM "LiveEvent"
+       WHERE id = $1
+       LIMIT 1`,
+      [id]
+    );
+    const event = eventResult.rows[0] || null;
+    if (!event) {
+      return res.status(404).json({ error: 'Live event not found' });
+    }
+
+    if (String(event.status || '').toLowerCase() === 'ended') {
+      return res.status(400).json({ error: 'This live event has ended.' });
+    }
+
+    const isAdmin = req.authenticatedUser.role === 'admin';
+    const isHost = event.host_email === userEmail;
+    let hasAccess = isAdmin || isHost || event.access_type === 'free';
+
+    if (!hasAccess) {
+      const accessResult = await pool.query(
+        `SELECT id FROM "LiveEventAccess"
+         WHERE event_id = $1 AND user_email = $2 AND payment_status = 'active'
+         LIMIT 1`,
+        [id, userEmail]
+      );
+      hasAccess = !!accessResult.rows[0];
+    }
+
+    if (!hasAccess) {
+      return res.status(403).json({ error: 'Access denied. Purchase is required for this live event.' });
+    }
+
+    const embedUrl = getLiveEmbedUrl(event.stream_provider, event.stream_id);
+    if (!embedUrl) {
+      return res.status(400).json({ error: 'Stream provider is not configured correctly.' });
+    }
+
+    return res.json({
+      event_id: event.id,
+      title: event.title,
+      status: event.status,
+      stream_provider: event.stream_provider,
+      embed_url: embedUrl,
+      access_type: event.access_type,
+      price_usd: Number(event.price_usd || 0),
+    });
+  } catch (error) {
+    console.error('❌ [live-events/:id/watch-session GET] Error:', error.message);
+    return res.status(500).json({ error: 'Failed to start watch session' });
+  }
+});
+
+// Presence join: creates/updates a viewer session record
+app.post('/api/live-events/:id/presence/join', authenticateUser, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userEmail = req.authenticatedUser.email;
+    const sessionId = String(req.body?.sessionId || '').trim() || 'default';
+
+    const eventResult = await pool.query(`SELECT * FROM "LiveEvent" WHERE id = $1 LIMIT 1`, [id]);
+    const event = eventResult.rows[0] || null;
+    if (!event) return res.status(404).json({ error: 'Live event not found' });
+
+    const hasAccess = await canUserAccessLiveEvent(event, req.authenticatedUser);
+    if (!hasAccess) {
+      return res.status(403).json({ error: 'Access denied for this live event.' });
+    }
+
+    const existing = await pool.query(
+      `SELECT id FROM "LiveEventPresence"
+       WHERE event_id = $1 AND user_email = $2 AND session_id = $3
+       ORDER BY updated_date DESC
+       LIMIT 1`,
+      [id, userEmail, sessionId]
+    );
+
+    if (existing.rows[0]) {
+      await pool.query(
+        `UPDATE "LiveEventPresence"
+         SET last_seen_at = CURRENT_TIMESTAMP,
+             left_at = NULL,
+             updated_date = CURRENT_TIMESTAMP
+         WHERE id = $1`,
+        [existing.rows[0].id]
+      );
+    } else {
+      await pool.query(
+        `INSERT INTO "LiveEventPresence"
+           (event_id, user_email, session_id, joined_at, last_seen_at, left_at)
+         VALUES ($1, $2, $3, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, NULL)`,
+        [id, userEmail, sessionId]
+      );
+    }
+
+    return res.json({ success: true, event_id: id, session_id: sessionId });
+  } catch (error) {
+    console.error('❌ [live-events/:id/presence/join POST] Error:', error.message);
+    return res.status(500).json({ error: 'Failed to join live presence' });
+  }
+});
+
+// Presence heartbeat: keeps viewer session active
+app.post('/api/live-events/:id/presence/heartbeat', authenticateUser, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userEmail = req.authenticatedUser.email;
+    const sessionId = String(req.body?.sessionId || '').trim() || 'default';
+
+    const eventResult = await pool.query(`SELECT * FROM "LiveEvent" WHERE id = $1 LIMIT 1`, [id]);
+    const event = eventResult.rows[0] || null;
+    if (!event) return res.status(404).json({ error: 'Live event not found' });
+
+    const hasAccess = await canUserAccessLiveEvent(event, req.authenticatedUser);
+    if (!hasAccess) {
+      return res.status(403).json({ error: 'Access denied for this live event.' });
+    }
+
+    const updated = await pool.query(
+      `UPDATE "LiveEventPresence"
+       SET last_seen_at = CURRENT_TIMESTAMP,
+           left_at = NULL,
+           updated_date = CURRENT_TIMESTAMP
+       WHERE event_id = $1 AND user_email = $2 AND session_id = $3
+       RETURNING id`,
+      [id, userEmail, sessionId]
+    );
+
+    if (!updated.rows[0]) {
+      await pool.query(
+        `INSERT INTO "LiveEventPresence"
+           (event_id, user_email, session_id, joined_at, last_seen_at, left_at)
+         VALUES ($1, $2, $3, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, NULL)`,
+        [id, userEmail, sessionId]
+      );
+    }
+
+    return res.json({ success: true, event_id: id, session_id: sessionId });
+  } catch (error) {
+    console.error('❌ [live-events/:id/presence/heartbeat POST] Error:', error.message);
+    return res.status(500).json({ error: 'Failed to update live presence' });
+  }
+});
+
+// Presence leave: marks a viewer session as left
+app.post('/api/live-events/:id/presence/leave', authenticateUser, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userEmail = req.authenticatedUser.email;
+    const sessionId = String(req.body?.sessionId || '').trim() || 'default';
+
+    await pool.query(
+      `UPDATE "LiveEventPresence"
+       SET left_at = CURRENT_TIMESTAMP,
+           last_seen_at = CURRENT_TIMESTAMP,
+           updated_date = CURRENT_TIMESTAMP
+       WHERE event_id = $1 AND user_email = $2 AND session_id = $3`,
+      [id, userEmail, sessionId]
+    );
+
+    return res.json({ success: true, event_id: id, session_id: sessionId });
+  } catch (error) {
+    console.error('❌ [live-events/:id/presence/leave POST] Error:', error.message);
+    return res.status(500).json({ error: 'Failed to leave live presence' });
+  }
+});
+
+// Host/admin watcher visibility: active count + watcher identities
+app.get('/api/live-events/:id/watchers', authenticateUser, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const eventResult = await pool.query(`SELECT * FROM "LiveEvent" WHERE id = $1 LIMIT 1`, [id]);
+    const event = eventResult.rows[0] || null;
+    if (!event) return res.status(404).json({ error: 'Live event not found' });
+
+    const isAdmin = req.authenticatedUser.role === 'admin';
+    const isHost = event.host_email === req.authenticatedUser.email;
+    if (!isAdmin && !isHost) {
+      return res.status(403).json({ error: 'Only host or admin can view watcher identities.' });
+    }
+
+    const result = await pool.query(
+      `SELECT
+         p.user_email,
+         MAX(p.joined_at) AS joined_at,
+         MAX(p.last_seen_at) AS last_seen_at,
+         up.display_name,
+         up.avatar_url
+       FROM "LiveEventPresence" p
+       LEFT JOIN "UserProfile" up ON up.user_email = p.user_email
+       WHERE p.event_id = $1
+         AND p.last_seen_at >= (CURRENT_TIMESTAMP - INTERVAL '30 seconds')
+         AND (p.left_at IS NULL OR p.left_at < p.last_seen_at)
+       GROUP BY p.user_email, up.display_name, up.avatar_url
+       ORDER BY MAX(p.last_seen_at) DESC`,
+      [id]
+    );
+
+    return res.json({
+      event_id: id,
+      active_count: result.rows.length,
+      watchers: result.rows,
+    });
+  } catch (error) {
+    console.error('❌ [live-events/:id/watchers GET] Error:', error.message);
+    return res.status(500).json({ error: 'Failed to load live watchers' });
+  }
+});
+
+// Create PayPal order for live event access
+app.post('/api/paypal/create-live-order', authenticateUserStrict, async (req, res) => {
+  try {
+    const userEmail = req.authenticatedUser.email;
+    const { eventId } = req.body || {};
+    if (!eventId) {
+      return res.status(400).json({ error: 'eventId is required' });
+    }
+
+    const eventResult = await pool.query(`SELECT * FROM "LiveEvent" WHERE id = $1 LIMIT 1`, [eventId]);
+    const event = eventResult.rows[0] || null;
+    if (!event) {
+      return res.status(404).json({ error: 'Live event not found' });
+    }
+
+    if (event.access_type === 'free') {
+      return res.status(400).json({ error: 'This event is free and does not require payment.' });
+    }
+
+    if (String(event.status || '').toLowerCase() === 'ended') {
+      return res.status(400).json({ error: 'This live event has ended.' });
+    }
+
+    const amount = Number(event.price_usd || 0);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      return res.status(400).json({ error: 'Live event price is invalid.' });
+    }
+
+    const existingAccess = await pool.query(
+      `SELECT id FROM "LiveEventAccess"
+       WHERE event_id = $1 AND user_email = $2 AND payment_status = 'active'
+       LIMIT 1`,
+      [eventId, userEmail]
+    );
+    if (existingAccess.rows[0]) {
+      return res.status(400).json({ error: 'You already have access to this live event.' });
+    }
+
+    const order = await createPayPalLiveOrder({
+      amount,
+      userEmail,
+      liveEventId: eventId,
+      title: event.title,
+    });
+
+    await pool.query(
+      `INSERT INTO "LiveEventAccess" (event_id, user_email, payment_status, payment_provider, provider_order_id, paid_amount)
+       VALUES ($1, $2, 'pending_payment', 'paypal', $3, $4)
+       ON CONFLICT (event_id, user_email)
+       DO UPDATE SET
+         payment_status = 'pending_payment',
+         payment_provider = 'paypal',
+         provider_order_id = EXCLUDED.provider_order_id,
+         paid_amount = EXCLUDED.paid_amount,
+         updated_date = CURRENT_TIMESTAMP`,
+      [eventId, userEmail, order.id, amount]
+    );
+
+    return res.json({
+      success: true,
+      eventId,
+      orderID: order.id,
+      amount: Number(amount.toFixed(2)),
+      currency: 'USD',
+      approvalUrl: order.links?.find((link) => link.rel === 'approve')?.href,
+      status: order.status,
+    });
+  } catch (error) {
+    console.error('❌ [create-live-order] Error:', error.message);
+    return res.status(500).json({
+      error: error.message || 'Failed to create live payment order',
+      code: error.code || 'CREATE_LIVE_ORDER_FAILED',
+      debug_id: error.debug_id,
+    });
+  }
+});
+
+// Capture PayPal order and grant live event access
+app.post('/api/paypal/capture-live-order', authenticateUserStrict, async (req, res) => {
+  try {
+    const userEmail = req.authenticatedUser.email;
+    const { eventId, orderID } = req.body || {};
+    if (!eventId || !orderID) {
+      return res.status(400).json({ error: 'eventId and orderID are required' });
+    }
+
+    const eventResult = await pool.query(`SELECT * FROM "LiveEvent" WHERE id = $1 LIMIT 1`, [eventId]);
+    const event = eventResult.rows[0] || null;
+    if (!event) {
+      return res.status(404).json({ error: 'Live event not found' });
+    }
+
+    const accessResult = await pool.query(
+      `SELECT * FROM "LiveEventAccess"
+       WHERE event_id = $1 AND user_email = $2
+       LIMIT 1`,
+      [eventId, userEmail]
+    );
+    const accessRow = accessResult.rows[0] || null;
+    if (!accessRow) {
+      return res.status(404).json({ error: 'Pending access record not found for this user/event.' });
+    }
+
+    if (accessRow.provider_order_id && accessRow.provider_order_id !== orderID) {
+      return res.status(400).json({ error: 'Order mismatch for this event access.' });
+    }
+
+    const capture = await capturePayPalLiveOrder(orderID);
+    const captureStatus = String(capture?.status || '').toUpperCase();
+    if (captureStatus !== 'COMPLETED') {
+      return res.status(400).json({
+        error: 'PayPal payment is not completed yet.',
+        status: capture?.status,
+      });
+    }
+
+    const paidAmount = Number(
+      capture?.purchase_units?.[0]?.payments?.captures?.[0]?.amount?.value ||
+      accessRow.paid_amount ||
+      event.price_usd ||
+      0
+    );
+
+    const updated = await pool.query(
+      `UPDATE "LiveEventAccess"
+       SET payment_status = 'active',
+           payment_provider = 'paypal',
+           provider_order_id = $1,
+           paid_amount = $2,
+           granted_at = CURRENT_TIMESTAMP,
+           updated_date = CURRENT_TIMESTAMP
+       WHERE id = $3
+       RETURNING *`,
+      [orderID, Number.isFinite(paidAmount) ? Number(paidAmount.toFixed(2)) : Number(event.price_usd || 0), accessRow.id]
+    );
+
+    return res.json({
+      success: true,
+      eventId,
+      orderID,
+      captureStatus,
+      access: updated.rows[0] || null,
+    });
+  } catch (error) {
+    console.error('❌ [capture-live-order] Error:', error.message);
+    return res.status(500).json({
+      error: error.message || 'Failed to capture live order',
+      code: error.code || 'CAPTURE_LIVE_ORDER_FAILED',
+      debug_id: error.debug_id,
+    });
+  }
+});
 app.post('/api/paypal/create-subscription', authenticateUserStrict, async (req, res) => {
   try {
     const userEmail = req.authenticatedUser.email;
@@ -3823,6 +5152,339 @@ app.post('/api/paypal/activate-subscription', authenticateUserStrict, async (req
   } catch (error) {
     console.error('❌ PayPal activate subscription error:', error.message);
     res.status(500).json({ error: error.message });
+  }
+});
+
+// ============ Ad Center (Phase 1) ============
+
+// Public endpoint for homepage/banner display.
+app.get('/api/ads/active', async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT id, business_name, website_url, banner_image_url, starts_at, ends_at
+       FROM "AdCampaign"
+       WHERE status = 'active'
+         AND starts_at IS NOT NULL
+         AND ends_at IS NOT NULL
+         AND starts_at <= CURRENT_TIMESTAMP
+         AND ends_at > CURRENT_TIMESTAMP
+       ORDER BY updated_date DESC
+       LIMIT 10`
+    );
+
+    res.json(result.rows);
+  } catch (error) {
+    console.error('❌ [ads/active] Error:', error.message);
+    res.status(500).json({ error: 'Failed to load active ads' });
+  }
+});
+
+// Authenticated list for advertiser dashboard (current user sees own ads; admin sees all).
+app.get('/api/ads/my', authenticateUser, async (req, res) => {
+  try {
+    const isAdmin = req.authenticatedUser.role === 'admin';
+    const result = isAdmin
+      ? await pool.query(`SELECT * FROM "AdCampaign" ORDER BY updated_date DESC LIMIT 200`)
+      : await pool.query(
+          `SELECT * FROM "AdCampaign" WHERE user_email = $1 ORDER BY updated_date DESC LIMIT 200`,
+          [req.authenticatedUser.email]
+        );
+
+    res.json(result.rows);
+  } catch (error) {
+    console.error('❌ [ads/my] Error:', error.message);
+    res.status(500).json({ error: 'Failed to load ads' });
+  }
+});
+
+// Admin-only: delete an ad campaign.
+app.delete('/api/ads/:adId', authenticateUserStrict, async (req, res) => {
+  try {
+    if (req.authenticatedUser.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin only.' });
+    }
+    const { adId } = req.params;
+    const existing = await pool.query(`SELECT id FROM "AdCampaign" WHERE id = $1 LIMIT 1`, [adId]);
+    if (!existing.rows[0]) {
+      return res.status(404).json({ error: 'Ad campaign not found.' });
+    }
+    await pool.query(`DELETE FROM "AdCampaign" WHERE id = $1`, [adId]);
+    return res.json({ success: true });
+  } catch (err) {
+    console.error('delete-ad error:', err);
+    return res.status(500).json({ error: 'Server error.' });
+  }
+});
+
+// Admin-only: activate an ad immediately without payment (for testing).
+app.post('/api/ads/activate-free', authenticateUserStrict, async (req, res) => {
+  try {
+    const userEmail = req.authenticatedUser.email;
+    if (req.authenticatedUser.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin only.' });
+    }
+
+    const {
+      business_name,
+      contact_email,
+      contact_number,
+      website_url,
+      banner_image_url,
+      duration_days,
+    } = req.body || {};
+
+    const durationDays = Number(duration_days) || 30;
+    const normalizedBusiness = String(business_name || '').trim();
+    const normalizedEmail = String(contact_email || '').trim().toLowerCase();
+    const normalizedPhone = String(contact_number || '').trim();
+    const normalizedWebsite = normalizeWebsiteUrl(website_url);
+    const normalizedBanner = String(banner_image_url || '').trim();
+
+    if (!normalizedBusiness) return res.status(400).json({ error: 'Business name is required.' });
+    if (!isReasonableEmail(normalizedEmail)) return res.status(400).json({ error: 'A valid contact email is required.' });
+    if (!normalizedWebsite) return res.status(400).json({ error: 'A valid website URL is required.' });
+
+    const startsAt = new Date();
+    const endsAt = new Date(startsAt.getTime() + durationDays * 24 * 60 * 60 * 1000);
+
+    const result = await pool.query(
+      `INSERT INTO "AdCampaign"
+         (user_email, business_name, contact_email, contact_number, website_url, banner_image_url,
+          duration_days, amount_paid, status, paypal_order_id, starts_at, ends_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'active','FREE_TEST',$9,$10)
+       RETURNING *`,
+      [userEmail, normalizedBusiness, normalizedEmail, normalizedPhone, normalizedWebsite,
+       normalizedBanner, durationDays, 0, startsAt, endsAt]
+    );
+
+    return res.json({ ad: result.rows[0] });
+  } catch (err) {
+    console.error('activate-free error:', err);
+    return res.status(500).json({ error: 'Server error.' });
+  }
+});
+
+// Create PayPal order for a new ad OR extension of existing ad.
+app.post('/api/paypal/create-ad-order', authenticateUserStrict, async (req, res) => {
+  try {
+    const userEmail = req.authenticatedUser.email;
+    const {
+      adId,
+      business_name,
+      contact_email,
+      contact_number,
+      website_url,
+      banner_image_url,
+      duration_days,
+    } = req.body || {};
+
+    const durationDays = Number(duration_days);
+    if (!AD_DURATION_OPTIONS.includes(durationDays)) {
+      return res.status(400).json({ error: 'Invalid ad duration. Allowed: 30, 60, 90, 365 days.' });
+    }
+
+    const amount = getAdPriceForDuration(durationDays);
+    if (!amount) {
+      return res.status(500).json({ error: 'Ad pricing is not configured correctly.' });
+    }
+
+    let adRecord = null;
+    if (adId) {
+      const existing = await pool.query(`SELECT * FROM "AdCampaign" WHERE id = $1 LIMIT 1`, [adId]);
+      adRecord = existing.rows[0] || null;
+      if (!adRecord) {
+        return res.status(404).json({ error: 'Ad campaign not found.' });
+      }
+
+      const canManage = adRecord.user_email === userEmail || req.authenticatedUser.role === 'admin';
+      if (!canManage) {
+        return res.status(403).json({ error: 'Forbidden: you can only pay for your own ad campaign.' });
+      }
+
+      if (business_name || contact_email || contact_number || website_url || banner_image_url) {
+        const normalizedWebsite = website_url ? normalizeWebsiteUrl(website_url) : adRecord.website_url;
+        if (website_url && !normalizedWebsite) {
+          return res.status(400).json({ error: 'Invalid website URL.' });
+        }
+
+        if (contact_email && !isReasonableEmail(contact_email)) {
+          return res.status(400).json({ error: 'Invalid contact email.' });
+        }
+
+        const updated = await pool.query(
+          `UPDATE "AdCampaign"
+           SET business_name = $1,
+               contact_email = $2,
+               contact_number = $3,
+               website_url = $4,
+               banner_image_url = $5,
+               updated_date = CURRENT_TIMESTAMP
+           WHERE id = $6
+           RETURNING *`,
+          [
+            String(business_name || adRecord.business_name || '').trim(),
+            String(contact_email || adRecord.contact_email || '').trim().toLowerCase(),
+            String(contact_number || adRecord.contact_number || '').trim(),
+            normalizedWebsite,
+            String(banner_image_url || adRecord.banner_image_url || '').trim(),
+            adRecord.id,
+          ]
+        );
+        adRecord = updated.rows[0] || adRecord;
+      }
+    } else {
+      const normalizedBusiness = String(business_name || '').trim();
+      const normalizedEmail = String(contact_email || '').trim().toLowerCase();
+      const normalizedPhone = String(contact_number || '').trim();
+      const normalizedWebsite = normalizeWebsiteUrl(website_url);
+      const normalizedBanner = String(banner_image_url || '').trim();
+
+      if (!normalizedBusiness) {
+        return res.status(400).json({ error: 'Business name is required.' });
+      }
+      if (!isReasonableEmail(normalizedEmail)) {
+        return res.status(400).json({ error: 'A valid contact email is required.' });
+      }
+      if (!normalizedWebsite) {
+        return res.status(400).json({ error: 'A valid website URL is required.' });
+      }
+
+      const inserted = await pool.query(
+        `INSERT INTO "AdCampaign" (
+          user_email, business_name, contact_email, contact_number, website_url, banner_image_url,
+          status, duration_days, pending_duration_days, pending_amount
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        RETURNING *`,
+        [
+          userEmail,
+          normalizedBusiness,
+          normalizedEmail,
+          normalizedPhone,
+          normalizedWebsite,
+          normalizedBanner,
+          'pending_payment',
+          durationDays,
+          durationDays,
+          amount,
+        ]
+      );
+      adRecord = inserted.rows[0];
+    }
+
+    const order = await createPayPalAdOrder({
+      amount,
+      userEmail,
+      adId: adRecord.id,
+      durationDays,
+    });
+
+    await pool.query(
+      `UPDATE "AdCampaign"
+       SET paypal_order_id = $1,
+           pending_duration_days = $2,
+           pending_amount = $3,
+           duration_days = $4,
+           status = CASE WHEN status = 'active' THEN status ELSE 'pending_payment' END,
+           updated_date = CURRENT_TIMESTAMP
+       WHERE id = $5`,
+      [order.id, durationDays, amount, durationDays, adRecord.id]
+    );
+
+    res.json({
+      success: true,
+      adId: adRecord.id,
+      orderID: order.id,
+      amount,
+      currency: 'USD',
+      duration_days: durationDays,
+      approvalUrl: order.links?.find((link) => link.rel === 'approve')?.href,
+      status: order.status,
+    });
+  } catch (error) {
+    console.error('❌ [create-ad-order] Error:', error.message);
+    res.status(500).json({
+      error: error.message || 'Failed to create ad payment order',
+      code: error.code || 'CREATE_AD_ORDER_FAILED',
+      debug_id: error.debug_id,
+    });
+  }
+});
+
+// Capture ad payment and activate/extend campaign duration.
+app.post('/api/paypal/capture-ad-order', authenticateUserStrict, async (req, res) => {
+  try {
+    const userEmail = req.authenticatedUser.email;
+    const { adId, orderID } = req.body || {};
+
+    if (!adId || !orderID) {
+      return res.status(400).json({ error: 'adId and orderID are required.' });
+    }
+
+    const adResult = await pool.query(`SELECT * FROM "AdCampaign" WHERE id = $1 LIMIT 1`, [adId]);
+    const ad = adResult.rows[0] || null;
+    if (!ad) {
+      return res.status(404).json({ error: 'Ad campaign not found.' });
+    }
+
+    const canManage = ad.user_email === userEmail || req.authenticatedUser.role === 'admin';
+    if (!canManage) {
+      return res.status(403).json({ error: 'Forbidden: you can only capture payment for your own ad campaign.' });
+    }
+
+    if (ad.paypal_order_id && ad.paypal_order_id !== orderID) {
+      return res.status(400).json({ error: 'Order ID does not match latest pending order for this ad.' });
+    }
+
+    const capture = await capturePayPalAdOrder(orderID);
+    const captureStatus = String(capture?.status || '').toUpperCase();
+    if (captureStatus !== 'COMPLETED') {
+      return res.status(400).json({ error: `Payment not completed. Current status: ${capture?.status || 'unknown'}` });
+    }
+
+    const captureId = capture?.purchase_units?.[0]?.payments?.captures?.[0]?.id || null;
+    const pendingDays = Number(ad.pending_duration_days || ad.duration_days || 30);
+    const pendingAmount = Number(ad.pending_amount || 0);
+    const now = new Date();
+    const existingEndsAt = ad.ends_at ? new Date(ad.ends_at) : null;
+    const hasActiveWindow = existingEndsAt && existingEndsAt.getTime() > now.getTime() && ad.status === 'active';
+
+    const baseStart = hasActiveWindow ? existingEndsAt : now;
+    const newEndsAt = new Date(baseStart.getTime() + pendingDays * 24 * 60 * 60 * 1000);
+    const startsAtForUpdate = hasActiveWindow ? ad.starts_at : now.toISOString();
+
+    const updatedResult = await pool.query(
+      `UPDATE "AdCampaign"
+       SET status = 'active',
+           starts_at = $1,
+           ends_at = $2,
+           duration_days = $3,
+           amount_paid = $4,
+           paypal_payment_id = $5,
+           pending_duration_days = NULL,
+           pending_amount = NULL,
+           updated_date = CURRENT_TIMESTAMP
+       WHERE id = $6
+       RETURNING *`,
+      [startsAtForUpdate, newEndsAt.toISOString(), pendingDays, pendingAmount, captureId, ad.id]
+    );
+
+    res.json({
+      success: true,
+      ad: updatedResult.rows[0],
+      paypal: {
+        orderID,
+        captureID: captureId,
+        status: capture.status,
+      },
+    });
+  } catch (error) {
+    console.error('❌ [capture-ad-order] Error:', error.message);
+    res.status(500).json({
+      error: error.message || 'Failed to capture ad payment',
+      code: error.code || 'CAPTURE_AD_ORDER_FAILED',
+      debug_id: error.debug_id,
+    });
   }
 });
 

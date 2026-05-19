@@ -135,7 +135,8 @@ export default function Layout({ children, currentPageName }) {
   const content = (
     <div className="min-h-screen bg-slate-50">
       {/* InactivityManager removed — no auto pop-down */}
-      {currentPageName !== 'VideoCall' && <IncomingCallDetector user={{ email: userEmail }} />}
+      {/* Always mounted so handledCallIds persists across VideoCall navigation, preventing auto-redial of stale offer signals */}
+      <IncomingCallDetector user={{ email: userEmail }} isCallActive={currentPageName === 'VideoCall'} />
       <style>{`
         :root {
           --primary: 139 92 246;

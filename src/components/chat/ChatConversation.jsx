@@ -23,6 +23,7 @@ export default function ChatConversation({
   onBack,
   onSendMessage,
   onDeleteMessage,
+  onMessagesRead,
   isSending 
 }) {
   const [newMessage, setNewMessage] = useState('');
@@ -40,9 +41,14 @@ export default function ChatConversation({
       m => m.receiver_email === currentUserEmail && !m.read
     );
     
-    unreadMessages.forEach(msg => {
-      base44.entities.Message.update(msg.id, { read: true });
-    });
+    if (unreadMessages.length === 0) return;
+
+    Promise.all(unreadMessages.map(msg =>
+      base44.entities.Message.update(msg.id, { read: true })
+    )).then(() => {
+      // Notify parent so it can invalidate badge query caches immediately
+      if (onMessagesRead) onMessagesRead();
+    }).catch(() => {});
   }, [messages, currentUserEmail]);
 
   const handleSend = async () => {
@@ -97,32 +103,32 @@ export default function ChatConversation({
           className="md:hidden rounded-full flex-shrink-0"
         >
           <ArrowLeft className="w-5 h-5" />
-          </Button>
+        </Button>
 
-          <Link
-            to={createPageUrl('Profile') + `?user=${otherUserEmail}&back=Chat&chatWith=${otherUserEmail}`}
-            className="flex-shrink-0"
-          >
-            <img
-              src={otherProfile.avatar_url || `data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect fill='%23ddd6fe' width='100' height='100'/%3E%3Ccircle cx='50' cy='38' r='18' fill='%23a78bfa'/%3E%3Cellipse cx='50' cy='80' rx='28' ry='22' fill='%23a78bfa'/%3E%3C/svg%3E`}
-              alt={otherProfile.display_name}
-              className="w-12 h-12 rounded-full object-cover border-2 border-violet-100 cursor-pointer hover:border-violet-300 transition-colors"
-            />
-          </Link>
-        
-        <div className="flex-1 min-w-0">
-          <Link to={createPageUrl('Profile') + `?user=${otherUserEmail}&back=Chat&chatWith=${otherUserEmail}`}>
-            <h2 className="truncate font-semibold text-slate-800 hover:text-violet-600 cursor-pointer transition-colors">{otherProfile.display_name}</h2>
-          </Link>
-          {otherProfile.is_popped_up ? (
-            <div className="flex items-center gap-1 text-xs text-green-600">
-              <div className="w-2 h-2 rounded-full bg-green-500"></div>
-              Active now
-            </div>
-          ) : (
-            <p className="text-xs text-slate-500">Offline</p>
-          )}
-        </div>
+        <Link
+          to={createPageUrl('Profile') + `?user=${encodeURIComponent(otherUserEmail)}&from=profile&backTo=${encodeURIComponent('Chat')}&returnTo=${encodeURIComponent(window.location.pathname + window.location.search)}`}
+          className="flex min-w-0 items-center gap-3 flex-1"
+        >
+          <img
+            src={otherProfile.avatar_url || `data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect fill='%23ddd6fe' width='100' height='100'/%3E%3Ccircle cx='50' cy='38' r='18' fill='%23a78bfa'/%3E%3Cellipse cx='50' cy='80' rx='28' ry='22' fill='%23a78bfa'/%3E%3C/svg%3E`}
+            alt={otherProfile.display_name}
+            className="w-12 h-12 flex-shrink-0 rounded-full object-cover border-2 border-violet-100 cursor-pointer hover:border-violet-300 transition-colors"
+          />
+
+          <div className="flex-1 min-w-0">
+            <h2 className="truncate font-semibold text-slate-800 hover:text-violet-600 cursor-pointer transition-colors">
+              {otherProfile.display_name}
+            </h2>
+            {otherProfile.is_popped_up ? (
+              <div className="flex items-center gap-1 text-xs text-green-600">
+                <div className="w-2 h-2 rounded-full bg-green-500"></div>
+                Active now
+              </div>
+            ) : (
+              <p className="text-xs text-slate-500">Offline</p>
+            )}
+          </div>
+        </Link>
 
         {otherProfile.current_city && (
           <div className="hidden max-w-[30vw] flex-shrink-0 items-center gap-1 truncate text-sm text-purple-600 sm:flex">

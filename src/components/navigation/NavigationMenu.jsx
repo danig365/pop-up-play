@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button';
 
 export default function NavigationMenu({ unreadCount = 0 }) {
   return (
-    <Link to={createPageUrl('Menu')}>
+    <Link to={createPageUrl('Menu')} className="inline-flex flex-col items-center gap-0.5">
       <Button
         variant="ghost"
         size="icon"
@@ -19,6 +19,7 @@ export default function NavigationMenu({ unreadCount = 0 }) {
           </span>
         )}
       </Button>
+      <span className="text-[10px] font-medium leading-none text-slate-500 translate-x-0.5">Menu</span>
     </Link>
   );
 }

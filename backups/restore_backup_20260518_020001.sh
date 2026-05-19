@@ -3,9 +3,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TIMESTAMP="20260401_060807"
+TIMESTAMP="20260518_020001"
 
-DB_CONTAINER="${DB_CONTAINER:-pop-up-play-db}"
+DB_CONTAINER="${DB_CONTAINER:-dfaeccc51586_pop-up-play-db}"
 APP_CONTAINER="${APP_CONTAINER:-pop-up-play-app}"
 DB_USER="${DB_USER:-popupapp}"
 DB_NAME="${DB_NAME:-popup_play_db}"

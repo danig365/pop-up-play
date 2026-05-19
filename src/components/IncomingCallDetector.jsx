@@ -6,13 +6,25 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { useNavigate } from 'react-router-dom';
 import { Phone, PhoneOff } from 'lucide-react';
 
-export default function IncomingCallDetector({ user }) {
+export default function IncomingCallDetector({ user, isCallActive = false }) {
   const [incomingCall, setIncomingCall] = useState(null);
   const [isOpen, setIsOpen] = useState(false);
   const [handledCallIds, setHandledCallIds] = useState(new Set());
   const acceptedCallIdRef = useRef(null); // Track which call was accepted to prevent signal deletion
   const ringAudioRef = useRef(null);
   const navigate = useNavigate();
+
+  // When navigating to VideoCall page, close any open dialog so it doesn't show on top of the call UI
+  useEffect(() => {
+    if (isCallActive && isOpen) {
+      setIsOpen(false);
+      setIncomingCall(null);
+      if (ringAudioRef.current) {
+        ringAudioRef.current.pause();
+        ringAudioRef.current.currentTime = 0;
+      }
+    }
+  }, [isCallActive]);
   const userEmail = user?.email;
 
   // Create ring audio on mount
@@ -99,6 +111,12 @@ export default function IncomingCallDetector({ user }) {
         console.log('   From:', latestCall.from_email);
         console.log('   Call ID:', latestCall.call_id);
         console.log('   Signal ID:', latestCall.id.substring(0, 8));
+
+        // Don't open the dialog if the user is already on an active call
+        if (isCallActive) {
+          console.log('   ⏸️ Suppressing popup — user is currently on a call');
+          return;
+        }
         setIncomingCall(latestCall);
         setIsOpen(true);
       }

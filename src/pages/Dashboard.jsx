@@ -32,7 +32,7 @@ export default function Dashboard() {
   const [locationEnabled, setLocationEnabledState] = useState(() => isLocationEnabled());
   const [locationPermission, setLocationPermission] = useState('unknown');
   const [locationLoading, setLocationLoading] = useState(false);
-  const [showLocationHelp, setShowLocationHelp] = useState(false);
+  const [showLocationModal, setShowLocationModal] = useState(false);
   const queryClient = useQueryClient();
   const [broadcastEnabled, setBroadcastEnabled] = useState(true);
 
@@ -149,24 +149,32 @@ export default function Dashboard() {
     }
   };
 
-  const getLocationHelpText = () => {
-    if (typeof navigator === 'undefined') {
-      return 'Open your browser settings and allow location access for this site, then return and tap Enable again.';
+  const getLocationPlatform = () => {
+    if (typeof navigator === 'undefined') return 'other';
+    const ua = navigator.userAgent || '';
+    if (/iPhone|iPad|iPod/i.test(ua)) return 'ios';
+    if (/Android/i.test(ua)) return 'android';
+    return 'desktop';
+  };
+
+  const handleFixLocation = () => {
+    const platform = getLocationPlatform();
+    // On Android: trigger native geolocation which shows Chrome's "Location blocked" snackbar
+    // with a built-in "Site settings" tap — don't show modal, let Chrome handle it
+    if (platform === 'android') {
+      if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(
+          async () => {
+            const state = await getLocationPermissionState();
+            setLocationPermission(state);
+          },
+          () => {}
+        );
+      }
+      return;
     }
-
-    const userAgent = navigator.userAgent || '';
-    const isIOS = /iPhone|iPad|iPod/i.test(userAgent);
-    const isAndroid = /Android/i.test(userAgent);
-
-    if (isIOS) {
-      return 'iPhone/iPad: Settings > Safari > Location > Allow, then reopen this page and tap Enable.';
-    }
-
-    if (isAndroid) {
-      return 'Android: Browser site settings > Location > Allow, and make sure device Location is ON.';
-    }
-
-    return 'Desktop: Click the lock icon near the address bar, allow Location for this site, then refresh and tap Enable.';
+    // iOS and desktop: show instructions modal
+    setShowLocationModal(true);
   };
 
   const handleLogout = async () => {
@@ -337,21 +345,61 @@ export default function Dashboard() {
 
           {locationPermission === 'denied' &&
           <div className="px-4 pb-4 border-b border-slate-100">
-              <div className="flex items-center justify-end mb-2">
-                <Button
-                variant="link"
-                className="h-auto p-0 text-sm text-violet-700"
-                onClick={() => setShowLocationHelp((prev) => !prev)}>
-                  {showLocationHelp ? 'Hide settings help' : 'How to enable in browser settings'}
-                </Button>
-              </div>
-              {showLocationHelp &&
-            <p className="text-xs text-slate-600 bg-slate-50 rounded-lg px-3 py-2">
-                  {getLocationHelpText()}
-                </p>
-            }
+              <Button
+                variant="outline"
+                className="w-full border-violet-300 text-violet-700 hover:bg-violet-50 text-sm"
+                onClick={handleFixLocation}>
+                Fix Location Access
+              </Button>
             </div>
           }
+
+          {/* Location Help Modal */}
+          {showLocationModal && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4" onClick={() => setShowLocationModal(false)}>
+              <div className="bg-white rounded-2xl shadow-xl p-6 max-w-sm w-full" onClick={(e) => e.stopPropagation()}>
+                <h3 className="text-lg font-semibold text-slate-800 mb-3">Enable Location Access</h3>
+                {getLocationPlatform() === 'ios' && (
+                  <div>
+                    <a
+                      href="App-Prefs:root=Privacy&path=LOCATION"
+                      className="block w-full text-center bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium py-2 px-4 rounded-lg mb-4"
+                    >
+                      Open iPhone Settings
+                    </a>
+                    <p className="text-xs text-slate-500 mb-3">Then follow these steps:</p>
+                    <ol className="text-sm text-slate-600 space-y-2 list-decimal list-inside">
+                      <li>Tap <strong>Safari</strong></li>
+                      <li>Tap <strong>Location</strong></li>
+                      <li>Select <strong>Allow</strong></li>
+                      <li>Return here and tap <strong>Enable</strong></li>
+                    </ol>
+                  </div>
+                )}
+                {getLocationPlatform() === 'android' && (
+                  <ol className="text-sm text-slate-600 space-y-2 list-decimal list-inside">
+                    <li>Tap the <strong>lock icon</strong> in the address bar</li>
+                    <li>Tap <strong>Site settings</strong> or <strong>Permissions</strong></li>
+                    <li>Tap <strong>Location</strong> and set to <strong>Allow</strong></li>
+                    <li>Make sure device <strong>Location is ON</strong> in phone settings</li>
+                    <li>Return here and tap <strong>Enable</strong></li>
+                  </ol>
+                )}
+                {getLocationPlatform() === 'desktop' && (
+                  <ol className="text-sm text-slate-600 space-y-2 list-decimal list-inside">
+                    <li>Click the <strong>lock icon</strong> near the address bar</li>
+                    <li>Set <strong>Location</strong> to <strong>Allow</strong></li>
+                    <li>Refresh the page and tap <strong>Enable</strong></li>
+                  </ol>
+                )}
+                <Button
+                  className="mt-5 w-full bg-violet-600 hover:bg-violet-700 text-white"
+                  onClick={() => setShowLocationModal(false)}>
+                  Got it
+                </Button>
+              </div>
+            </div>
+          )}
 
           <div className="flex items-center gap-4 p-4 border-b border-slate-100">
             <div className="w-10 h-10 rounded-full bg-purple-100 flex items-center justify-center">

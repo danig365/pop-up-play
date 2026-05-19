@@ -37,6 +37,12 @@ export const PAGE_TIERS = {
   Dashboard: 'open',
   Contact: 'open',
   PrivacyPolicy: 'open',
+  TermsAndConditions: 'open',
+  RefundPolicy: 'open',
+  Exemption2257: 'open',
+  LiveEvents: 'open',
+  LiveEventDetail: 'open',
+  LiveWatch: 'open',
   // Tier 2 — Browse-only (actions blocked)
   AllProfiles: 'browse',
   OnlineMembers: 'browse',
@@ -51,6 +57,8 @@ export const PAGE_TIERS = {
   EventCenter: 'gated',
   CurrentEvents: 'gated',
   EventDetail: 'gated',
+  AdCenter: 'gated',
+  LiveStudio: 'gated',
 };
 
 export function SubscriptionProvider({ children }) {

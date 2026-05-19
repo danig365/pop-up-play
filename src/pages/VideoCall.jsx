@@ -5,7 +5,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
 import { ArrowLeft, Video, VideoOff, Mic, MicOff, PhoneOff, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Link, useLocation } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { createPageUrl } from '@/utils';
 import { toast } from 'sonner';
 
@@ -22,6 +22,7 @@ export default function VideoCall() {
   const [peerConnectionReady, setPeerConnectionReady] = useState(false); // Track if peer connection is fully set up
 
   const location = useLocation();
+  const navigate = useNavigate();
   const offerFromStateRef = useRef(location.state?.offerSignalData || null);
 
   const localVideoRef = useRef(null);
@@ -41,9 +42,21 @@ export default function VideoCall() {
     const callIdParam = params.get('callId');
     const isReceiverParam = params.get('isReceiver');
     const fromParam = params.get('from');
+    const returnToParam = params.get('returnTo');
+    const backToParam = params.get('backTo');
     
     setOtherUserEmail(userParam);
     setIsReceiver(isReceiverParam === 'true');
+
+    const resolveProfileReturnUrl = (rawValue) => {
+      if (!rawValue) return null;
+      try {
+        const decodedValue = decodeURIComponent(rawValue);
+        return decodedValue.startsWith('/Profile') ? decodedValue : null;
+      } catch {
+        return null;
+      }
+    };
     
     // If callId is provided (receiver accepting a call), use it
     // Otherwise, generate a new one (caller initiating a call)
@@ -54,7 +67,11 @@ export default function VideoCall() {
     }
     
     // Set back URL based on where the call was initiated
-    if (fromParam === 'onlinemembers') {
+    // returnTo = the Profile URL — always go back to Profile after video verify
+    const profileReturnUrl = resolveProfileReturnUrl(returnToParam);
+    if (fromParam === 'profile' && profileReturnUrl) {
+      setBackUrl(profileReturnUrl);
+    } else if (fromParam === 'onlinemembers') {
       setBackUrl(createPageUrl('OnlineMembers'));
     } else {
       setBackUrl(createPageUrl('Home'));
@@ -359,9 +376,9 @@ export default function VideoCall() {
       if (peerConnectionRef.current) {
         peerConnectionRef.current.close();
       }
-      // Clean up ALL signals for this call from the database (fire and forget)
-      if (callId) {
-        base44.entities.VideoSignal.filter({ call_id: callId })
+      // Clean up only signals addressed TO the current user — preserves end-call signals in transit
+      if (callId && user?.email) {
+        base44.entities.VideoSignal.filter({ call_id: callId, to_email: user.email })
           .then(signals => {
             signals.forEach(signal => {
               base44.entities.VideoSignal.delete(signal.id).catch(() => {});
@@ -619,13 +636,15 @@ export default function VideoCall() {
       ringingAudioRef.current.currentTime = 0;
     }
     
-    // Comprehensive cleanup: Delete ALL signals for this call to prevent stale notifications
+    // Only delete signals addressed TO the current user — do NOT delete the end-call
+    // signal sent to the other party, as they may not have polled yet.
     try {
-      const allCallSignals = await base44.entities.VideoSignal.filter({
-        call_id: callId
+      const myReceivedSignals = await base44.entities.VideoSignal.filter({
+        call_id: callId,
+        to_email: user.email
       });
-      console.log(`🧹 [VideoCall] Cleaning up ${allCallSignals.length} signal(s) for call ${callId}`);
-      for (const signal of allCallSignals) {
+      console.log(`🧹 [VideoCall] Cleaning up ${myReceivedSignals.length} signal(s) addressed to me for call ${callId}`);
+      for (const signal of myReceivedSignals) {
         try {
           await base44.entities.VideoSignal.delete(signal.id);
         } catch (err) {
@@ -642,6 +661,10 @@ export default function VideoCall() {
     if (peerConnectionRef.current) {
       peerConnectionRef.current.close();
     }
+  };
+
+  const handleGoBack = () => {
+    navigate(backUrl, { replace: true });
   };
 
   if (!user || !otherProfile) {
@@ -663,11 +686,14 @@ export default function VideoCall() {
       <header className="bg-slate-800/80 backdrop-blur-lg border-b border-slate-700 flex-shrink-0 z-10">
         <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <Link to={backUrl}>
-              <Button variant="ghost" size="icon" className="rounded-full text-white hover:bg-slate-700">
-                <ArrowLeft className="w-5 h-5" />
-              </Button>
-            </Link>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="rounded-full text-white hover:bg-slate-700"
+              onClick={handleGoBack}
+            >
+              <ArrowLeft className="w-5 h-5" />
+            </Button>
             <div className="flex items-center gap-3">
               <img
                 src={otherProfile.avatar_url || `data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect fill='%23ddd6fe' width='100' height='100'/%3E%3Ccircle cx='50' cy='38' r='18' fill='%23a78bfa'/%3E%3Cellipse cx='50' cy='80' rx='28' ry='22' fill='%23a78bfa'/%3E%3C/svg%3E`}
@@ -716,11 +742,12 @@ export default function VideoCall() {
                 <PhoneOff className="w-10 h-10 text-red-400" />
               </div>
               <h3 className="text-white text-xl font-semibold mb-2">Call Ended</h3>
-              <Link to={backUrl}>
-                <Button className="bg-purple-700 text-[#ffffff] mt-4 px-4 py-2 text-sm font-medium rounded-md inline-flex items-center justify-center gap-2 whitespace-nowrap transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 shadow h-9 hover:bg-violet-700">
-                  Go Back
-                </Button>
-              </Link>
+              <Button
+                onClick={handleGoBack}
+                className="bg-purple-700 text-[#ffffff] mt-4 px-4 py-2 text-sm font-medium rounded-md inline-flex items-center justify-center gap-2 whitespace-nowrap transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 shadow h-9 hover:bg-violet-700"
+              >
+                Go Back
+              </Button>
             </div>
           </div>
         }

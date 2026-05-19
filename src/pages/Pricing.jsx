@@ -406,6 +406,17 @@ export default function Pricing() {
         >
           Cancel anytime. No questions asked.
         </motion.p>
+
+        <motion.div
+          className="text-center mt-3"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ delay: 0.35 }}
+        >
+          <Link to={createPageUrl('RefundPolicy')} className="text-sm text-violet-700 hover:underline">
+            Refund Policy
+          </Link>
+        </motion.div>
       </div>
     </div>
   );

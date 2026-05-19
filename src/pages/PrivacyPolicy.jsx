@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { ArrowLeft, Shield } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -7,6 +7,10 @@ import { createPageUrl } from '@/utils';
 
 export default function PrivacyPolicy() {
   const navigate = useNavigate();
+
+  useEffect(() => {
+    window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+  }, []);
 
   const sections = [
     {
@@ -176,6 +180,23 @@ export default function PrivacyPolicy() {
               )}
             </motion.div>
           ))}
+
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.3, delay: 0.25 }}
+            className="bg-white rounded-2xl shadow-sm border border-slate-100 p-6"
+          >
+            <h3 className="text-base font-semibold text-slate-800 mb-3">Legal Documents</h3>
+            <div className="flex flex-col gap-2 text-sm">
+              <Link to={createPageUrl('TermsAndConditions')} className="text-violet-700 hover:underline">
+                Terms and Conditions
+              </Link>
+              <Link to={createPageUrl('Exemption2257')} className="text-violet-700 hover:underline">
+                2257 Exempt
+              </Link>
+            </div>
+          </motion.div>
         </motion.div>
       </div>
     </div>

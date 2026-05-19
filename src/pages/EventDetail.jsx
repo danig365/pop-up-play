@@ -1,5 +1,5 @@
 // @ts-nocheck
-import React from 'react';
+import React, { useMemo } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { ArrowLeft, MapPin, CalendarDays, Clock, User, Trash2, Pencil } from 'lucide-react';
 import { motion } from 'framer-motion';
@@ -59,6 +59,24 @@ export default function EventDetail() {
 
   const poster = profiles[0] ?? null;
 
+  const taggedEmails = useMemo(() => {
+    if (!Array.isArray(event?.tagged_users) || event.tagged_users.length === 0) return [];
+    return event.tagged_users.map((u) => u.user_email).filter(Boolean);
+  }, [event?.tagged_users]);
+
+  const { data: taggedProfiles = [] } = useQuery({
+    queryKey: ['eventTaggedProfiles', taggedEmails],
+    enabled: taggedEmails.length > 0,
+    queryFn: async () => {
+      const results = await Promise.all(
+        taggedEmails.map((email) =>
+          base44.entities.UserProfile.filter({ user_email: email }).then((r) => r[0] ?? null)
+        )
+      );
+      return results.filter(Boolean);
+    },
+  });
+
   const deleteEventMutation = useMutation({
     mutationFn: async () => {
       if (!event?.id) throw new Error('Event not found');
@@ -94,6 +112,10 @@ export default function EventDetail() {
     await deleteEventMutation.mutateAsync();
   };
 
+  const handleBack = () => {
+    navigate(createPageUrl('CurrentEvents'));
+  };
+
   if (!eventId) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-violet-50 via-white to-rose-50 flex items-center justify-center">
@@ -111,11 +133,9 @@ export default function EventDetail() {
     <div className="min-h-screen bg-gradient-to-br from-violet-50 via-white to-rose-50">
       <header className="sticky top-0 z-50 bg-white/80 backdrop-blur-lg border-b border-slate-100">
         <div className="max-w-2xl mx-auto px-4 py-4 flex items-center justify-between">
-          <Link to={createPageUrl('CurrentEvents')}>
-            <Button variant="ghost" size="icon" className="rounded-full">
-              <ArrowLeft className="w-5 h-5" />
-            </Button>
-          </Link>
+          <Button variant="ghost" size="icon" className="rounded-full" onClick={handleBack}>
+            <ArrowLeft className="w-5 h-5" />
+          </Button>
           <h1 className="text-lg font-semibold text-slate-800">Event Detail</h1>
           <div className="w-9" />
         </div>
@@ -174,16 +194,12 @@ export default function EventDetail() {
                 )}
 
                 <div className="space-y-2.5 text-sm text-slate-600">
-                  {location_str && (
-                    <div className="flex items-center gap-2">
-                      <MapPin className="w-4 h-4 text-fuchsia-500 flex-shrink-0" />
-                      <span>{location_str}</span>
-                    </div>
-                  )}
-                  {event.address && (
-                    <div className="flex items-center gap-2">
-                      <MapPin className="w-4 h-4 text-slate-400 flex-shrink-0" />
-                      <span className="text-slate-500">{event.address}</span>
+                  {(location_str || event.address) && (
+                    <div className="flex items-start gap-2">
+                      <MapPin className="w-4 h-4 text-fuchsia-500 flex-shrink-0 mt-0.5" />
+                      <span>
+                        {[event.address, location_str].filter(Boolean).join(', ')}
+                      </span>
                     </div>
                   )}
                   <div className="flex items-center gap-2">
@@ -233,7 +249,7 @@ export default function EventDetail() {
               <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Posted by</p>
               <div
                 className="flex items-center gap-4 cursor-pointer group"
-                onClick={() => navigate(createPageUrl('Profile') + '?user=' + event.user_email)}
+                onClick={() => navigate(createPageUrl('Profile') + '?user=' + encodeURIComponent(event.user_email) + '&back=EventDetail&eventId=' + encodeURIComponent(event.id))}
               >
                 <div className="w-14 h-14 rounded-full overflow-hidden bg-gradient-to-br from-fuchsia-200 to-violet-200 flex-shrink-0 flex items-center justify-center group-hover:ring-2 group-hover:ring-fuchsia-400 transition-all">
                   {poster?.avatar_url ? (
@@ -253,6 +269,39 @@ export default function EventDetail() {
                 <ArrowLeft className="w-4 h-4 text-slate-300 rotate-180 group-hover:text-fuchsia-500 transition-colors flex-shrink-0" />
               </div>
             </motion.div>
+
+            {/* Tagged / Attending users */}
+            {taggedProfiles.length > 0 && (
+              <motion.div
+                initial={{ opacity: 0, y: 16 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.15 }}
+                className="bg-white rounded-2xl shadow-lg p-5"
+              >
+                <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Attending / Featured</p>
+                <div className="space-y-3">
+                  {taggedProfiles.map((profile) => (
+                    <div
+                      key={profile.user_email}
+                      className="flex items-center gap-3 cursor-pointer group"
+                      onClick={() => navigate(createPageUrl('Profile') + '?user=' + encodeURIComponent(profile.user_email) + '&back=EventDetail&eventId=' + encodeURIComponent(event.id))}
+                    >
+                      <div className="w-10 h-10 rounded-full overflow-hidden bg-gradient-to-br from-fuchsia-200 to-violet-200 flex-shrink-0 flex items-center justify-center group-hover:ring-2 group-hover:ring-fuchsia-400 transition-all">
+                        {profile.avatar_url ? (
+                          <img src={profile.avatar_url} alt={profile.display_name} className="w-full h-full object-cover" />
+                        ) : (
+                          <User className="w-5 h-5 text-fuchsia-500" />
+                        )}
+                      </div>
+                      <p className="font-medium text-slate-900 group-hover:text-fuchsia-700 transition-colors truncate">
+                        {profile.display_name || profile.user_email}
+                      </p>
+                      <ArrowLeft className="w-4 h-4 text-slate-300 rotate-180 group-hover:text-fuchsia-500 transition-colors flex-shrink-0 ml-auto" />
+                    </div>
+                  ))}
+                </div>
+              </motion.div>
+            )}
           </>
         )}
       </main>

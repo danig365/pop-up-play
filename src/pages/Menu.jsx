@@ -2,7 +2,7 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
 import { createPageUrl } from '@/utils';
-import { MessageCircle, Heart, Users, Info, ArrowLeft, Key, CreditCard, LogOut, Flame, Send, Settings, Shield, Mail, Calendar } from 'lucide-react';
+import { MessageCircle, Heart, Users, Info, ArrowLeft, Key, CreditCard, LogOut, Flame, Send, Settings, Shield, Mail, BadgeDollarSign, Radio } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { motion } from 'framer-motion';
 import NotificationBadge from '@/components/notifications/NotificationBadge';
@@ -38,7 +38,10 @@ export default function Menu() {
         receiver_email: user.email,
         read: false
       });
-      return allMessages.length;
+      // Exclude messages the user has soft-deleted (deleted_for contains their email)
+      return allMessages.filter(m =>
+        !Array.isArray(m.deleted_for) || !m.deleted_for.includes(user.email)
+      ).length;
     },
     enabled: !!user?.email,
     refetchInterval: 5000
@@ -85,6 +88,31 @@ export default function Menu() {
       color: 'bg-transparent',
       description: 'Browse and create live events',
       isImage: true
+    },
+    {
+      label: 'Advertise',
+      icon: BadgeDollarSign,
+      path: 'AdCenter',
+      color: 'bg-amber-200',
+      iconColor: 'text-amber-700',
+      description: 'Create, pay for, and renew ad campaigns'
+    },
+    {
+      label: 'Live Studio',
+      icon: Radio,
+      path: 'LiveStudio',
+      color: 'bg-rose-200',
+      iconColor: 'text-rose-700',
+      description: 'Create and manage free or paid livestream events',
+      adminOnly: true
+    },
+    {
+      label: 'Live Events',
+      icon: Radio,
+      path: 'LiveEvents',
+      color: 'bg-red-100',
+      iconColor: 'text-red-700',
+      description: 'Browse upcoming and live streams'
     },
     {
       label: 'About',
@@ -159,9 +187,9 @@ export default function Menu() {
   ];
 
   // Combine menu items - add admin items before Sign Out if user is admin
-  const allMenuItems = isAdmin 
+  const allMenuItems = (isAdmin 
     ? [...menuItems.slice(0, -1), ...adminMenuItems, menuItems[menuItems.length - 1]]
-    : menuItems;
+    : menuItems).filter((item) => !item.adminOnly || isAdmin);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-violet-50 via-white to-rose-50">

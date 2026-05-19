@@ -185,9 +185,16 @@ export default function Login() {
               alt="Pop Up Play" 
               className="w-20 h-20 mx-auto mb-4 object-contain"
             />
+            <p className="text-sm font-semibold text-slate-900 mb-3">Couples, Singles and Swingers</p>
             
             <h1 className="text-2xl font-bold text-slate-900">Welcome to Pop Up Play</h1>
-            <p className="font-semibold mt-1 text-sm" style={{ color: '#7C3AED' }}>Sign Up for Free</p>
+            <button
+              type="button"
+              onClick={() => navigate(createPageUrl('Signup'))}
+              className="font-semibold mt-1 text-sm text-violet-600 hover:text-violet-700 hover:underline"
+            >
+              Click Here to Sign Up for Free
+            </button>
             <p className="text-slate-500 mt-1 text-sm">Sign in to continue</p>
           </div>
 
@@ -283,7 +290,7 @@ export default function Login() {
                 onClick={() => navigate(createPageUrl('Signup'))}
                 className="text-slate-600 hover:text-slate-900"
               >
-                Need an account? <span className="font-semibold text-slate-900">Sign up</span>
+                Need an account? <span className="font-semibold text-violet-600">Sign up</span>
               </button>
             </div>
           </div>

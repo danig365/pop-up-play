@@ -9,6 +9,7 @@ import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { createPageUrl } from '@/utils';
 import BlockButton from '@/components/blocking/BlockButton';
 import { useSubscription } from '@/lib/SubscriptionContext';
+import { DEFAULT_AVATAR_TEMPLATE } from '@/lib/avatarTemplate';
 
 const EARTH_RADIUS_MILES = 3958.8;
 
@@ -56,8 +57,8 @@ const stateMapping = {
 };
 
 export default function OnlineMembers() {
-  const INITIAL_VISIBLE = 12;
-  const LOAD_MORE_STEP = 12;
+  const INITIAL_VISIBLE = 6;
+  const LOAD_MORE_STEP = 6;
 
   const [user, setUser] = useState(null);
   const [userLoading, setUserLoading] = useState(true);
@@ -74,6 +75,8 @@ export default function OnlineMembers() {
   const { guardAction } = useSubscription();
   const queryClient = useQueryClient();
   const isMountedRef = useRef(true);
+  const pendingRestoreScrollRef = useRef(null);
+  const pendingRestoreCountRef = useRef(null);
 
   // Reset state whenever the page is accessed
   useEffect(() => {
@@ -91,12 +94,24 @@ export default function OnlineMembers() {
     setInterestFilter('');
     setLocationFilter('');
     setLiveLocationsByProfileId({});
-    setVisibleCount(INITIAL_VISIBLE);
-    
+    // Restore scroll from sessionStorage when returning from a profile, otherwise reset
+    const savedScroll = sessionStorage.getItem('onlineMembers_scrollY');
+    const savedCount = sessionStorage.getItem('onlineMembers_visibleCount');
+    if (savedScroll !== null) {
+      sessionStorage.removeItem('onlineMembers_scrollY');
+      sessionStorage.removeItem('onlineMembers_visibleCount');
+      const count = Math.max(INITIAL_VISIBLE, parseInt(savedCount || String(INITIAL_VISIBLE), 10));
+      pendingRestoreCountRef.current = count;
+      setVisibleCount(count);
+      pendingRestoreScrollRef.current = parseInt(savedScroll, 10);
+    } else {
+      setVisibleCount(INITIAL_VISIBLE);
+    }
+
     // Invalidate stale data but keep cache for fast re-renders
     queryClient.invalidateQueries({ queryKey: ['activeProfiles'] });
-    
-    const params = new URLSearchParams(window.location.search);
+
+    const params = new URLSearchParams(location.search);
     const fromParam = params.get('from');
     if (fromParam === 'home') {
       setBackUrl('Home');
@@ -129,7 +144,7 @@ export default function OnlineMembers() {
     return () => {
       isMountedRef.current = false;
     };
-  }, [location.pathname, queryClient]);
+  }, [location.pathname, location.search, queryClient]);
 
   const { data: blockedUsers = [] } = useQuery({
     queryKey: ['blockedUsers', user?.email],
@@ -300,8 +315,31 @@ export default function OnlineMembers() {
 
   // Reset visible count when filters or data change
   useEffect(() => {
+    if (pendingRestoreCountRef.current !== null) {
+      return;
+    }
     setVisibleCount(INITIAL_VISIBLE);
   }, [screenNameFilter, interestFilter, locationFilter, activeProfiles.length]);
+
+  useEffect(() => {
+    if (isLoading || userLoading) return;
+    const targetScroll = pendingRestoreScrollRef.current;
+    if (targetScroll === null) return;
+
+    let attempts = 0;
+    const tryScroll = () => {
+      const pageHeight = document.documentElement.scrollHeight;
+      if (pageHeight > targetScroll + window.innerHeight || attempts > 20) {
+        window.scrollTo({ top: targetScroll, left: 0, behavior: 'auto' });
+        pendingRestoreScrollRef.current = null;
+        pendingRestoreCountRef.current = null;
+      } else {
+        attempts++;
+        requestAnimationFrame(tryScroll);
+      }
+    };
+    requestAnimationFrame(tryScroll);
+  }, [isLoading, userLoading, visibleCount, filteredProfiles.length]);
 
   const visibleProfiles = React.useMemo(
     () => filteredProfiles.slice(0, visibleCount),
@@ -339,12 +377,16 @@ export default function OnlineMembers() {
 
   const handleVideoCall = (otherUserEmail) => {
     if (!guardAction('make video calls')) return;
+    sessionStorage.setItem('onlineMembers_scrollY', String(Math.round(window.scrollY || 0)));
+    sessionStorage.setItem('onlineMembers_visibleCount', String(visibleCount));
     const callId = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     navigate(createPageUrl('VideoCall') + `?user=${otherUserEmail}&callId=${callId}&from=onlinemembers`);
   };
 
   const handleChat = (otherUserEmail) => {
     if (!guardAction('send messages')) return;
+    sessionStorage.setItem('onlineMembers_scrollY', String(Math.round(window.scrollY || 0)));
+    sessionStorage.setItem('onlineMembers_visibleCount', String(visibleCount));
     navigate(createPageUrl('Chat') + `?user=${otherUserEmail}&from=onlinemembers`);
   };
 
@@ -467,122 +509,142 @@ export default function OnlineMembers() {
             </p>
           </motion.div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          <div className="space-y-1">
             {visibleProfiles.map((profile, index) => (
               <motion.div
                 key={profile.id}
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: index * 0.05 }}
-                className="bg-white rounded-2xl shadow-lg overflow-hidden hover:shadow-xl transition-shadow"
+                initial={{ opacity: 0, x: -20 }}
+                animate={{ opacity: 1, x: 0 }}
+                transition={{ delay: index * 0.03 }}
+                className="group relative"
               >
-                {/* Profile Image */}
-                <div 
-                  className="relative h-64 bg-gradient-to-br from-violet-100 to-rose-100 cursor-pointer"
-                  onClick={() => {
-                    if (!guardAction('view full profiles')) return;
-                    navigate(createPageUrl('Profile') + '?user=' + profile.user_email + '&back=OnlineMembers');
-                  }}
-                >
-                  <img
-                    src={profile.avatar_url || `data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect fill='%23ddd6fe' width='100' height='100'/%3E%3Ccircle cx='50' cy='38' r='18' fill='%23a78bfa'/%3E%3Cellipse cx='50' cy='80' rx='28' ry='22' fill='%23a78bfa'/%3E%3C/svg%3E`}
-                    alt={profile.display_name}
-                    className="w-full h-full object-cover"
-                  />
-                  <div className="absolute top-3 right-3 flex items-center gap-1 bg-green-500 text-white text-xs font-semibold px-2 py-1 rounded-full">
-                    <div className="w-2 h-2 bg-white rounded-full animate-pulse"></div>
-                    Active
+                <div className="bg-white rounded-xl overflow-hidden border border-slate-100 transition-all hover:bg-slate-50 hover:border-slate-200 hover:shadow-md p-3 flex items-center gap-3">
+                  {/* Avatar with Gender */}
+                  <div className="flex flex-col items-center flex-shrink-0">
+                    <div className="relative w-16 h-16 md:w-20 md:h-20 rounded-lg overflow-hidden bg-slate-100 shadow-sm border border-slate-200 cursor-pointer" onClick={() => {
+                      if (!guardAction('view full profiles')) return;
+                      sessionStorage.setItem('onlineMembers_scrollY', String(Math.round(window.scrollY || 0)));
+                      sessionStorage.setItem('onlineMembers_visibleCount', String(visibleCount));
+                      navigate(
+                        createPageUrl('Profile') +
+                        '?user=' + encodeURIComponent(profile.user_email) +
+                        '&back=OnlineMembers'
+                      );
+                    }}>
+                      <img
+                        src={profile.avatar_url || DEFAULT_AVATAR_TEMPLATE}
+                        alt={profile.display_name}
+                        className="w-full h-full object-cover"
+                      />
+                      {profile.is_popped_up && (
+                        <div className="absolute top-1 right-1 w-2 h-2 bg-green-500 rounded-full border border-white shadow"></div>
+                      )}
+                    </div>
+                    {profile.gender && (
+                      <span className="text-[10px] text-slate-600 font-medium mt-1 text-center">
+                        {profile.gender}
+                      </span>
+                    )}
                   </div>
-                </div>
 
-                {/* Profile Info */}
-                <div className="p-5">
-                  <div className="flex items-center justify-between mb-3">
-                    <div>
-                      <h3 className="text-lg font-bold text-slate-800">
-                        {profile.display_name}{profile.age && `, ${profile.age}`}
+                  {/* Info */}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <h3 className="font-semibold text-slate-900 text-sm truncate cursor-pointer hover:text-violet-600" onClick={() => {
+                        if (!guardAction('view full profiles')) return;
+                        sessionStorage.setItem('onlineMembers_scrollY', String(Math.round(window.scrollY || 0)));
+                        sessionStorage.setItem('onlineMembers_visibleCount', String(visibleCount));
+                        navigate(
+                          createPageUrl('Profile') +
+                          '?user=' + encodeURIComponent(profile.user_email) +
+                          '&back=OnlineMembers'
+                        );
+                      }}>
+                        {profile.display_name || 'Anonymous'}
                       </h3>
-                      {profile.liveLocation && (
-                        <div className="flex items-center gap-1 text-sm text-slate-500 mt-1 flex-wrap">
-                          <MapPin className="w-3 h-3 text-violet-600" />
+                      {profile.age && (
+                        <span className="text-xs text-slate-600">{profile.age}</span>
+                      )}
+                      {profile.user_email === user?.email && (
+                        <span className="px-1.5 py-0.5 rounded text-xs font-semibold bg-violet-100 text-violet-700">You</span>
+                      )}
+                    </div>
+
+                    {profile.liveLocation && (
+                      <div className="flex items-center gap-1 text-xs text-slate-500 mt-0.5 truncate">
+                        <MapPin className="w-3 h-3 text-violet-600 flex-shrink-0" />
+                        <span className="truncate">
                           {profile.liveLocation}
-                          {profile.distance !== null && profile.distance !== undefined && (
-                            <span className="text-purple-600 font-semibold ml-1">
-                              • {profile.distance.toFixed(1)} mi
-                            </span>
-                          )}
-                          <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700 ml-1">
-                            Popped Up
+                        </span>
+                        {profile.distance !== null && profile.distance !== undefined && (
+                          <span className="text-purple-600 font-semibold flex-shrink-0">
+                            • {profile.distance.toFixed(1)} mi
                           </span>
-                        </div>
-                      )}
-                    </div>
-                  </div>
+                        )}
+                      </div>
+                    )}
 
-                  {profile.interests && profile.interests.length > 0 && (
-                    <div className="flex flex-wrap gap-1 mb-3">
-                      {profile.interests.slice(0, 3).map((interest, idx) => (
-                        <span key={idx} className="px-2 py-0.5 bg-violet-100 text-violet-700 rounded-full text-xs">
-                          {interest}
-                        </span>
-                      ))}
-                      {profile.interests.length > 3 && (
-                        <span className="px-2 py-0.5 bg-slate-100 text-slate-500 rounded-full text-xs">
-                          +{profile.interests.length - 3}
-                        </span>
-                      )}
-                    </div>
-                  )}
+                    {profile.interests && profile.interests.length > 0 && (
+                      <div className="flex items-center gap-1 mt-1 flex-wrap">
+                        {profile.interests.slice(0, 2).map((interest, idx) => (
+                          <span key={idx} className="px-1.5 py-0.5 bg-violet-100 text-violet-700 rounded text-[10px]">
+                            {interest}
+                          </span>
+                        ))}
+                        {profile.interests.length > 2 && (
+                          <span className="text-[10px] text-slate-500">
+                            +{profile.interests.length - 2}
+                          </span>
+                        )}
+                      </div>
+                    )}
 
-                  {profile.popup_message && (
-                    <div className="bg-violet-50 rounded-lg p-3 mb-4">
-                      <p className="text-sm text-slate-700 italic line-clamp-2">
-                        "{profile.popup_message}"
+                    {profile.interested_in && (
+                      <div className="text-xs text-slate-500 mt-1">
+                        <span className="font-semibold text-slate-700">Looking for:</span> {profile.interested_in}
+                      </div>
+                    )}
+
+                    {profile.popup_message && (
+                      <p className="text-xs text-slate-600 line-clamp-2 mt-0.5">
+                        {profile.popup_message}
                       </p>
-                    </div>
-                  )}
-
-                  {profile.bio && (
-                    <p className="text-sm text-slate-600 mb-4 line-clamp-2">
-                      {profile.bio}
-                    </p>
-                  )}
+                    )}
+                  </div>
 
                   {/* Action Buttons */}
-                  <div className="flex gap-2">
-                    <Button
-                      onClick={() => handleVideoCall(profile.user_email)}
-                      disabled={profile.isBlocked}
-                      className="flex-1 bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                  <div className="flex-shrink-0 flex flex-col gap-1.5">
+                    <button
+                      onClick={(e) => { e.stopPropagation(); handleVideoCall(profile.user_email); }}
+                      disabled={blockedUsers.some(b => b.blocked_email === profile.user_email)}
+                      className="h-8 px-2 bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 active:scale-95 text-white rounded-lg text-[11px] font-semibold disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-1 whitespace-nowrap shadow-sm"
+                      title="Video"
                     >
-                      <Video className="w-4 h-4" />
-                      Video Verify
-                    </Button>
-                    <Button
-                      onClick={() => handleChat(profile.user_email)}
-                      disabled={profile.isBlocked}
-                      className="flex-1 bg-gradient-to-r from-violet-600 to-purple-600 hover:from-violet-700 hover:to-purple-700 text-white gap-2 disabled:opacity-50 disabled:cursor-not-allowed relative"
+                      <Video className="w-3 h-3 flex-shrink-0" />
+                      <span>Video</span>
+                    </button>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); handleChat(profile.user_email); }}
+                      disabled={blockedUsers.some(b => b.blocked_email === profile.user_email)}
+                      className="h-8 px-2 bg-gradient-to-r from-violet-600 to-purple-600 hover:from-violet-700 hover:to-purple-700 active:scale-95 text-white rounded-lg text-[11px] font-semibold disabled:opacity-50 disabled:cursor-not-allowed relative transition-all flex items-center justify-center gap-1 whitespace-nowrap shadow-sm"
+                      title="Chat"
                     >
-                      <MessageCircle className="w-4 h-4" />
-                      Chat
+                      <MessageCircle className="w-3 h-3 flex-shrink-0" />
+                      <span>Chat</span>
                       {(() => {
                         const count = unreadMessages.filter(m => m.sender_email === profile.user_email).length;
                         return count > 0 ? (
-                          <span className="absolute -top-2 -right-2 min-w-[20px] h-[20px] flex items-center justify-center rounded-full bg-red-500 text-white text-[10px] font-bold px-1 leading-none shadow">
+                          <span className="absolute -top-2 -right-2 min-w-[20px] h-[20px] flex items-center justify-center rounded-full bg-red-500 text-white text-[9px] font-bold px-0.5 leading-none shadow-lg">
                             {count > 99 ? '99+' : count}
                           </span>
                         ) : null;
                       })()}
-                    </Button>
-                    {/* <BlockButton 
-                      targetUserEmail={profile.user_email} 
-                      currentUserEmail={user?.email}
-                      variant="outline"
-                    /> */}
+                    </button>
                   </div>
+
                   {profile.isBlocked && (
-                    <div className="mt-2 text-center">
-                      <span className="text-xs font-semibold text-slate-500 bg-slate-100 px-2 py-1 rounded">Blocked User</span>
+                    <div className="absolute inset-0 bg-black/20 rounded-lg flex items-center justify-center">
+                      <span className="text-[10px] font-semibold text-white bg-slate-800 px-2 py-1 rounded">Blocked</span>
                     </div>
                   )}
                 </div>

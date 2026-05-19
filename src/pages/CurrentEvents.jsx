@@ -1,7 +1,7 @@
 // @ts-nocheck
 import React, { useMemo } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { ArrowLeft, CalendarDays, CalendarPlus, MapPin, Trash2 } from 'lucide-react';
+import { ArrowLeft, CalendarDays, CalendarPlus, MapPin, Trash2, User } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { createPageUrl } from '@/utils';
 import { Button } from '@/components/ui/button';
@@ -42,6 +42,7 @@ export default function CurrentEvents() {
   });
 
   const { data: allEvents = [], isLoading } = useQuery({
+
     queryKey: ['activeEvents'],
     queryFn: async () => {
       const rows = await base44.entities.Event.filter({ is_active: true });
@@ -49,6 +50,32 @@ export default function CurrentEvents() {
     },
     refetchInterval: 60000,
   });
+
+  // Fetch profiles for all unique event creators
+  const uniqueEmails = useMemo(
+    () => [...new Set(allEvents.map((ev) => ev.user_email).filter(Boolean))],
+    [allEvents]
+  );
+
+  const { data: posterProfiles = [] } = useQuery({
+    queryKey: ['currentEventPosters', uniqueEmails],
+    enabled: uniqueEmails.length > 0,
+    queryFn: async () => {
+      const results = await Promise.all(
+        uniqueEmails.map((email) =>
+          base44.entities.UserProfile.filter({ user_email: email }).then((r) => r[0] ?? null)
+        )
+      );
+      return results.filter(Boolean);
+    },
+    staleTime: 60000,
+  });
+
+  const posterMap = useMemo(() => {
+    const map = {};
+    posterProfiles.forEach((p) => { if (p?.user_email) map[p.user_email] = p; });
+    return map;
+  }, [posterProfiles]);
 
   // Client-side filter: drop events past their end date
   const events = useMemo(
@@ -87,11 +114,9 @@ export default function CurrentEvents() {
     <div className="min-h-screen bg-gradient-to-br from-violet-50 via-white to-rose-50">
       <header className="sticky top-0 z-50 bg-white/80 backdrop-blur-lg border-b border-slate-100">
         <div className="max-w-2xl mx-auto px-4 py-4 flex items-center justify-between">
-          <Link to={createPageUrl('Home')}>
-            <Button variant="ghost" size="icon" className="rounded-full">
-              <ArrowLeft className="w-5 h-5" />
-            </Button>
-          </Link>
+          <Button variant="ghost" size="icon" className="rounded-full" onClick={() => navigate(createPageUrl('Menu'))}>
+            <ArrowLeft className="w-5 h-5" />
+          </Button>
           <h1 className="text-lg font-semibold text-slate-800">Current Events</h1>
           <Link to={createPageUrl('EventCenter')}>
             <Button size="sm" className="bg-fuchsia-600 hover:bg-fuchsia-700 text-white rounded-xl">
@@ -180,8 +205,36 @@ export default function CurrentEvents() {
                       </span>
                     </div>
                   )}
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs text-slate-400">{formatDateRange(event.starts_at, event.ends_at)}</span>
+                  <span className="text-xs text-slate-400">{formatDateRange(event.starts_at, event.ends_at)}</span>
+                  <div className="flex items-center justify-between mt-3 pt-3 border-t border-slate-100">
+                    <div
+                      className="flex items-center gap-2 cursor-pointer group"
+                      onClick={(e) => { e.stopPropagation(); navigate(createPageUrl('Profile') + '?user=' + encodeURIComponent(event.user_email) + '&back=CurrentEvents'); }}
+                    >
+                      <div className="w-7 h-7 rounded-full overflow-hidden bg-gradient-to-br from-fuchsia-200 to-violet-200 flex-shrink-0 flex items-center justify-center">
+                        {posterMap[event.user_email]?.avatar_url ? (
+                          <img src={posterMap[event.user_email].avatar_url} alt={posterMap[event.user_email].display_name} className="w-full h-full object-cover" />
+                        ) : (
+                          <User className="w-4 h-4 text-fuchsia-500" />
+                        )}
+                      </div>
+                      {
+                        (() => {
+                          const displayName = posterMap[event.user_email]?.display_name || event.user_email;
+                          const age = posterMap[event.user_email]?.age;
+                          const label = `${displayName}${age ? ', ' + age : ''}`;
+                          return (
+                            <span
+                              title={label}
+                              aria-label={`Profile: ${label}`}
+                              className="text-xs text-slate-500 group-hover:text-fuchsia-700 transition-colors break-words max-w-[55%]"
+                            >
+                              {displayName}{age ? `, ${age}` : ''}
+                            </span>
+                          );
+                        })()
+                      }
+                    </div>
                     <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${
                       daysLeft(event.ends_at) === 'Ended'
                         ? 'bg-slate-100 text-slate-500'

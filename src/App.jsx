@@ -17,6 +17,9 @@ import VerifyOtp from './pages/VerifyOtp';
 import ForgotPassword from './pages/ForgotPassword';
 import ResetPassword from './pages/ResetPassword';
 import PrivacyPolicy from './pages/PrivacyPolicy';
+import TermsAndConditions from './pages/TermsAndConditions';
+import RefundPolicy from './pages/RefundPolicy';
+import Exemption2257 from './pages/Exemption2257';
 import { GoogleOAuthProvider } from '@react-oauth/google';
 import { normalizeGoogleClientId, isGoogleClientIdConfigured } from '@/lib/googleAuth';
 import usePageTracking from '@/hooks/usePageTracking';
@@ -58,6 +61,9 @@ const AuthenticatedApp = () => {
         <Route path="/ForgotPassword" element={<ForgotPassword />} />
         <Route path="/reset-password" element={<ResetPassword />} />
         <Route path="/PrivacyPolicy" element={<PrivacyPolicy />} />
+        <Route path="/TermsAndConditions" element={<TermsAndConditions />} />
+        <Route path="/RefundPolicy" element={<RefundPolicy />} />
+        <Route path="/Exemption2257" element={<Exemption2257 />} />
         <Route path="*" element={<Landing />} />
       </Routes>
     );

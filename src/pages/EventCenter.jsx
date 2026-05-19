@@ -1,7 +1,7 @@
 // @ts-nocheck
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowLeft, CalendarPlus, CalendarDays, ImagePlus, Loader2, MapPin, Timer } from 'lucide-react';
+import { ArrowLeft, CalendarPlus, CalendarDays, ImagePlus, Loader2, MapPin, Timer, UserPlus, X } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { createPageUrl } from '@/utils';
 import { Button } from '@/components/ui/button';
@@ -32,6 +32,12 @@ export default function EventCenter() {
   const [isAddressLoading, setIsAddressLoading] = useState(false);
   const [showAddressSuggestions, setShowAddressSuggestions] = useState(false);
   const addressWrapperRef = useRef(null);
+  const [taggedUsers, setTaggedUsers] = useState([]);
+  const [tagSearch, setTagSearch] = useState('');
+  const [tagSuggestions, setTagSuggestions] = useState([]);
+  const [isTagSearching, setIsTagSearching] = useState(false);
+  const [showTagSuggestions, setShowTagSuggestions] = useState(false);
+  const tagWrapperRef = useRef(null);
   const [formData, setFormData] = useState({
     title: '',
     description: '',
@@ -72,6 +78,9 @@ export default function EventCenter() {
       duration_days: String(existingEvent.duration_days || '1'),
     });
     setPreviewUrl(existingEvent.image_url || '');
+    if (Array.isArray(existingEvent.tagged_users)) {
+      setTaggedUsers(existingEvent.tagged_users);
+    }
   }, [isEditMode, existingEvent]);
 
   const canSubmit = useMemo(() => {
@@ -88,6 +97,14 @@ export default function EventCenter() {
     );
   }, [formData, isSubmitting, imageUploading, isEditMode, existingEvent]);
 
+  const handleBack = () => {
+    if (window.history.length > 1) {
+      navigate(-1);
+      return;
+    }
+    navigate(createPageUrl('Menu'));
+  };
+
   useEffect(() => {
     if (!showAddressSuggestions) return;
 
@@ -100,6 +117,47 @@ export default function EventCenter() {
     document.addEventListener('mousedown', onDocClick);
     return () => document.removeEventListener('mousedown', onDocClick);
   }, [showAddressSuggestions]);
+
+  // Close tag dropdown on outside click
+  useEffect(() => {
+    if (!showTagSuggestions) return;
+    const onDocClick = (e) => {
+      if (!tagWrapperRef.current?.contains(e.target)) setShowTagSuggestions(false);
+    };
+    document.addEventListener('mousedown', onDocClick);
+    return () => document.removeEventListener('mousedown', onDocClick);
+  }, [showTagSuggestions]);
+
+  // Debounced user search for tagging
+  useEffect(() => {
+    if (tagSearch.trim().length < 2) { setTagSuggestions([]); return; }
+    const controller = new AbortController();
+    const timer = setTimeout(async () => {
+      try {
+        setIsTagSearching(true);
+        const token = localStorage.getItem('popup_auth_token');
+        const headers = {};
+        if (token) {
+          headers.Authorization = `Bearer ${token}`;
+        } else if (currentUser?.email) {
+          headers['x-user-email'] = currentUser.email;
+        }
+        const resp = await fetch(
+          `${API_BASE_URL}/users/search?q=${encodeURIComponent(tagSearch.trim())}`,
+          { signal: controller.signal, headers }
+        );
+        if (!resp.ok) throw new Error('Failed to search users');
+        const data = await resp.json().catch(() => []);
+        const alreadyTagged = new Set(taggedUsers.map((u) => u.user_email));
+        setTagSuggestions(Array.isArray(data) ? data.filter((u) => !alreadyTagged.has(u.user_email)) : []);
+      } catch (e) {
+        if (e?.name !== 'AbortError') setTagSuggestions([]);
+      } finally {
+        setIsTagSearching(false);
+      }
+    }, 300);
+    return () => { clearTimeout(timer); controller.abort(); };
+  }, [tagSearch, taggedUsers, currentUser?.email]);
 
   useEffect(() => {
     const query = formData.address.trim();
@@ -229,6 +287,7 @@ export default function EventCenter() {
         zip_code: formData.zip_code.trim(),
         starts_at: startsAtIso,
         duration_days: duration,
+        tagged_users: taggedUsers,
       };
 
       if (isEditMode) {
@@ -251,11 +310,9 @@ export default function EventCenter() {
     <div className="min-h-screen bg-gradient-to-br from-violet-50 via-white to-rose-50">
       <header className="sticky top-0 z-50 bg-white/80 backdrop-blur-lg border-b border-slate-100">
         <div className="max-w-2xl mx-auto px-4 py-4 flex items-center justify-between">
-          <Link to={createPageUrl('Menu')}>
-            <Button variant="ghost" size="icon" className="rounded-full">
-              <ArrowLeft className="w-5 h-5" />
-            </Button>
-          </Link>
+          <Button variant="ghost" size="icon" className="rounded-full" onClick={handleBack}>
+            <ArrowLeft className="w-5 h-5" />
+          </Button>
           <h1 className="text-lg font-semibold text-slate-800">Event Center</h1>
           <div className="w-9" />
         </div>
@@ -445,6 +502,81 @@ export default function EventCenter() {
               <p className="text-xs text-fuchsia-800">
                 This event will not submit unless address and ZIP code are provided.
               </p>
+            </div>
+
+            {/* Tag attending users */}
+            <div>
+              <Label className="text-slate-700">
+                <UserPlus className="inline w-4 h-4 mr-1 mb-0.5" />
+                Tag Attending Users
+              </Label>
+              <p className="text-xs text-slate-500 mb-2">Search and tag users who will be attending or featured.</p>
+
+              {/* Tagged chips */}
+              {taggedUsers.length > 0 && (
+                <div className="flex flex-wrap gap-2 mb-2">
+                  {taggedUsers.map((u) => (
+                    <span
+                      key={u.user_email}
+                      className="flex items-center gap-1.5 bg-fuchsia-100 text-fuchsia-800 text-xs font-medium px-2.5 py-1 rounded-full"
+                    >
+                      {u.avatar_url && (
+                        <img src={u.avatar_url} alt={u.display_name} className="w-4 h-4 rounded-full object-cover" />
+                      )}
+                      {u.display_name || u.user_email}
+                      <button
+                        type="button"
+                        onClick={() => setTaggedUsers((prev) => prev.filter((t) => t.user_email !== u.user_email))}
+                        className="ml-0.5 text-fuchsia-500 hover:text-fuchsia-700"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
+
+              {/* Search input */}
+              <div className="relative" ref={tagWrapperRef}>
+                <Input
+                  value={tagSearch}
+                  onChange={(e) => { setTagSearch(e.target.value); setShowTagSuggestions(true); }}
+                  onFocus={() => setShowTagSuggestions(true)}
+                  placeholder="Search by name or email..."
+                  className="rounded-xl border-slate-200"
+                />
+                {showTagSuggestions && tagSearch.trim().length >= 2 && (
+                  <div className="absolute z-30 top-full mt-1 left-0 right-0 bg-white border border-slate-200 rounded-xl shadow-lg max-h-56 overflow-y-auto">
+                    {isTagSearching ? (
+                      <div className="p-3 text-sm text-slate-500 flex items-center gap-2">
+                        <Loader2 className="w-4 h-4 animate-spin" /> Searching...
+                      </div>
+                    ) : tagSuggestions.length === 0 ? (
+                      <div className="p-3 text-sm text-slate-500">No users found.</div>
+                    ) : tagSuggestions.map((u) => (
+                        <button
+                          key={u.user_email}
+                          type="button"
+                          className="w-full text-left px-3 py-2.5 hover:bg-slate-50 flex items-center gap-3 border-b border-slate-100 last:border-b-0"
+                          onClick={() => {
+                            setTaggedUsers((prev) => [...prev, u]);
+                            setTagSearch('');
+                            setTagSuggestions([]);
+                            setShowTagSuggestions(false);
+                          }}
+                        >
+                          <div className="w-8 h-8 rounded-full overflow-hidden bg-gradient-to-br from-fuchsia-200 to-violet-200 flex-shrink-0 flex items-center justify-center">
+                            {u.avatar_url
+                              ? <img src={u.avatar_url} alt={u.display_name} className="w-full h-full object-cover" />
+                              : <span className="text-xs font-bold text-fuchsia-600">{(u.display_name || '?')[0].toUpperCase()}</span>
+                            }
+                          </div>
+                          <span className="text-sm font-medium text-slate-800">{u.display_name || u.user_email}</span>
+                        </button>
+                      ))}
+                  </div>
+                )}
+              </div>
             </div>
 
             <div className="flex flex-col sm:flex-row gap-3 pt-1">

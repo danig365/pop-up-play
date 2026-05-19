@@ -266,6 +266,17 @@ export default function Contact() {
             contact@popupplay.fun
           </a>
         </motion.p>
+
+        <motion.div
+          className="text-center mt-3"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ delay: 0.35 }}
+        >
+          <a href={createPageUrl('Contact')} className="text-sm text-violet-700 hover:underline">
+            Abuse, Content Removal, Complaints
+          </a>
+        </motion.div>
       </main>
     </div>
   );

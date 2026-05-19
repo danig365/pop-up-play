@@ -12,6 +12,7 @@ import BlockButton from '@/components/blocking/BlockButton';
 import { useSubscription } from '@/lib/SubscriptionContext';
 import { getApiBaseUrl } from '@/lib/apiUrl';
 import { getProfileCoords, calculateDistanceMiles, bulkGeocodeProfiles } from '@/lib/zipGeocode';
+import { DEFAULT_AVATAR_TEMPLATE } from '@/lib/avatarTemplate';
 
 // State name to abbreviation mapping
 const stateMapping = {
@@ -30,8 +31,8 @@ const stateMapping = {
 // Note: bulkGeocodeProfiles, calculateDistanceMiles, getProfileCoords imported from @/lib/zipGeocode
 
 export default function AllProfiles() {
-  const INITIAL_PROFILES_TO_SHOW = 10;
-  const LOAD_MORE_STEP = 10;
+  const INITIAL_PROFILES_TO_SHOW = 6;
+  const LOAD_MORE_STEP = 6;
   const DISTANCE_BATCH_SIZE = 40;
 
   const [user, setUser] = useState(null);
@@ -45,6 +46,9 @@ export default function AllProfiles() {
   const [visibleCount, setVisibleCount] = useState(INITIAL_PROFILES_TO_SHOW);
   const [distanceProgress, setDistanceProgress] = useState({ resolved: 0, total: 0 });
   const zipLookupRequestRef = useRef(0);
+  const pendingRestoreScrollRef = useRef(null);
+  const pendingRestoreCountRef = useRef(null);
+  const pendingRestoreStartedAtRef = useRef(0);
   const navigate = useNavigate();
   const { guardAction } = useSubscription();
 
@@ -188,6 +192,30 @@ export default function AllProfiles() {
       }
     };
     loadUser();
+  }, []);
+
+  // Restore position when returning from a profile page
+  useEffect(() => {
+    const savedScrollY = sessionStorage.getItem('allProfiles_scrollY');
+    const savedCount = sessionStorage.getItem('allProfiles_visibleCount');
+    const savedScreenName = sessionStorage.getItem('allProfiles_screenNameFilter');
+    const savedInterest = sessionStorage.getItem('allProfiles_interestFilter');
+    const savedLocation = sessionStorage.getItem('allProfiles_locationFilter');
+    if (savedScrollY !== null) {
+      sessionStorage.removeItem('allProfiles_scrollY');
+      sessionStorage.removeItem('allProfiles_visibleCount');
+      sessionStorage.removeItem('allProfiles_screenNameFilter');
+      sessionStorage.removeItem('allProfiles_interestFilter');
+      sessionStorage.removeItem('allProfiles_locationFilter');
+      if (savedScreenName) setScreenNameFilter(savedScreenName);
+      if (savedInterest) setInterestFilter(savedInterest);
+      if (savedLocation) setLocationFilter(savedLocation);
+      const count = Math.max(INITIAL_PROFILES_TO_SHOW, parseInt(savedCount || String(INITIAL_PROFILES_TO_SHOW), 10));
+      pendingRestoreCountRef.current = count;
+      setVisibleCount(count);
+      pendingRestoreScrollRef.current = Math.max(0, parseInt(savedScrollY, 10) || 0);
+      pendingRestoreStartedAtRef.current = Date.now();
+    }
   }, []);
 
   const { data: myProfile } = useQuery({
@@ -379,8 +407,45 @@ export default function AllProfiles() {
   }, [profilesWithDistance, screenNameFilter, interestFilter, locationFilter, user?.email, originalOrderMap]);
 
   useEffect(() => {
+    if (pendingRestoreCountRef.current !== null) {
+      return;
+    }
     setVisibleCount(INITIAL_PROFILES_TO_SHOW);
   }, [screenNameFilter, interestFilter, locationFilter, allProfiles.length]);
+
+  useEffect(() => {
+    if (isLoading) return;
+    if (sortedProfiles.length === 0) return;
+    const targetScroll = pendingRestoreScrollRef.current;
+    if (targetScroll === null) return;
+
+    // Wait for the distance pipeline to fully complete so the sort order is
+    // stable before restoring the prior page location.
+    const distancesComplete =
+      (distanceProgress.total > 0 && distanceProgress.resolved >= distanceProgress.total) ||
+      (distanceProgress.total === 0 && sortedProfiles.length > 0 && !isLoading);
+    if (!distancesComplete) return;
+
+    const tryScroll = () => {
+      if (pendingRestoreScrollRef.current === null) return;
+      const pageHeight = document.documentElement.scrollHeight;
+      if (pageHeight > targetScroll + window.innerHeight) {
+        window.scrollTo({ top: targetScroll, left: 0, behavior: 'auto' });
+        pendingRestoreScrollRef.current = null;
+        pendingRestoreCountRef.current = null;
+        pendingRestoreStartedAtRef.current = 0;
+      } else {
+        const elapsed = Date.now() - pendingRestoreStartedAtRef.current;
+        if (elapsed < 5000) {
+          requestAnimationFrame(tryScroll);
+        } else {
+          setTimeout(tryScroll, 100);
+        }
+      }
+    };
+
+    requestAnimationFrame(tryScroll);
+  }, [isLoading, visibleCount, sortedProfiles.length, distanceProgress.resolved]);
 
   const visibleProfiles = React.useMemo(
     () => sortedProfiles.slice(0, visibleCount),
@@ -502,143 +567,152 @@ export default function AllProfiles() {
           )}
         </motion.div>
 
-        {/* Profiles Grid */}
+        {/* Profiles List */}
         {sortedProfiles.length === 0 ? (
           <div className="text-center py-16">
             <p className="text-slate-500 text-lg">No profiles found</p>
           </div>
         ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+          <div className="space-y-1">
             {visibleProfiles.map((profile, index) => (
               <motion.div
                 key={profile.id}
-                layout
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ layout: { duration: 0.3 }, delay: index * 0.05 }}
-                whileHover={{ scale: 1.02 }}
-                className="cursor-pointer relative"
+                data-profile-id={profile.id}
+                initial={{ opacity: 0, x: -20 }}
+                animate={{ opacity: 1, x: 0 }}
+                transition={{ delay: index * 0.03 }}
+                className="group cursor-pointer relative"
                 onClick={() => {
                   if (!guardAction('view full profiles')) return;
-                  navigate(createPageUrl('Profile') + '?user=' + profile.user_email + '&back=AllProfiles');
+                  sessionStorage.setItem('allProfiles_scrollY', String(Math.round(window.scrollY || 0)));
+                  sessionStorage.setItem('allProfiles_visibleCount', String(visibleCount));
+                  sessionStorage.setItem('allProfiles_screenNameFilter', screenNameFilter);
+                  sessionStorage.setItem('allProfiles_interestFilter', interestFilter);
+                  sessionStorage.setItem('allProfiles_locationFilter', locationFilter);
+                  navigate(
+                    createPageUrl('Profile') +
+                    '?user=' + encodeURIComponent(profile.user_email) +
+                    '&back=AllProfiles'
+                  );
                 }}
               >
-                <div className="bg-white rounded-2xl shadow-lg overflow-hidden">
+                <div className="bg-white rounded-xl overflow-hidden border border-slate-100 transition-all hover:bg-slate-50 hover:border-slate-200 hover:shadow-md p-3 flex items-center gap-3">
                   {/* Admin controls */}
                   {user?.role === 'admin' && profile.user_email !== user?.email && (
-                    <div className="absolute top-2 left-2 z-10 flex gap-1" onClick={e => e.stopPropagation()}>
+                    <div className="absolute top-2 right-2 z-10 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity" onClick={e => e.stopPropagation()}>
                       <button
                         onClick={(e) => handleEditClick(profile, e)}
-                        className="bg-white/90 hover:bg-white text-purple-700 rounded-full p-1.5 shadow"
+                        className="bg-white hover:bg-slate-100 text-purple-700 rounded-full p-1 shadow text-xs"
                         title="Edit profile"
                       >
-                        <Pencil className="w-3.5 h-3.5" />
+                        <Pencil className="w-3 h-3" />
                       </button>
                       <button
                         onClick={(e) => { e.stopPropagation(); setConfirmDelete(profile); }}
-                        className="bg-white/90 hover:bg-white text-red-500 rounded-full p-1.5 shadow"
+                        className="bg-white hover:bg-slate-100 text-red-500 rounded-full p-1 shadow text-xs"
                         title="Delete profile"
                       >
-                        <Trash2 className="w-3.5 h-3.5" />
+                        <Trash2 className="w-3 h-3" />
                       </button>
                     </div>
                   )}
-                  {/* Avatar */}
-                  <div className="aspect-square relative">
-                    <img
-                      src={profile.avatar_url || `data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect fill='%23ddd6fe' width='100' height='100'/%3E%3Ccircle cx='50' cy='38' r='18' fill='%23a78bfa'/%3E%3Cellipse cx='50' cy='80' rx='28' ry='22' fill='%23a78bfa'/%3E%3C/svg%3E`}
-                      alt={profile.display_name}
-                      className="w-full h-full object-cover"
-                    />
-                    {profile.is_popped_up && (
-                      <div className="absolute top-3 right-3 w-3 h-3 bg-green-500 rounded-full border-2 border-white"></div>
+
+                  {/* Avatar with Gender */}
+                  <div className="flex flex-col items-center flex-shrink-0">
+                    <div className="relative w-16 h-16 md:w-20 md:h-20 rounded-lg overflow-hidden bg-slate-100 shadow-sm border border-slate-200">
+                      <img
+                        src={profile.avatar_url || DEFAULT_AVATAR_TEMPLATE}
+                        alt={profile.display_name}
+                        className="w-full h-full object-cover"
+                      />
+                      {profile.is_popped_up && (
+                        <div className="absolute top-1 right-1 w-2 h-2 bg-green-500 rounded-full border border-white shadow"></div>
+                      )}
+                    </div>
+                    {profile.gender && (
+                      <span className="text-[10px] text-slate-600 font-medium mt-1 text-center">
+                        {profile.gender}
+                      </span>
                     )}
                   </div>
 
                   {/* Info */}
-                  <div className="p-4">
-                    <div className="flex items-center gap-2 mb-1 flex-wrap">
-                      <h3 className="text-lg font-semibold text-slate-800">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <h3 className="font-semibold text-slate-900 text-sm truncate">
                         {profile.display_name || 'Anonymous'}
-                        {profile.age && <span className="text-slate-500">, {profile.age}</span>}
                       </h3>
+                      {profile.age && (
+                        <span className="text-xs text-slate-600">{profile.age}</span>
+                      )}
+                      {profile.is_popped_up ? (
+                        <span className="text-[9px] font-bold bg-green-100 text-green-700 px-1.5 py-0.5 rounded">Popped up</span>
+                      ) : (
+                        <span className="text-[9px] font-bold bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded">Popped down</span>
+                      )}
                       {profile.user_email === user?.email && (
-                        <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-violet-100 text-violet-700">
-                          You
-                        </span>
+                        <span className="px-1.5 py-0.5 rounded text-xs font-semibold bg-violet-100 text-violet-700">You</span>
                       )}
                       {user?.role === 'admin' && (() => {
                         const sub = subscriptionMap[profile.user_email];
                         const isPaid = sub && (sub.status === 'active' || sub.status === 'trial');
                         return (
-                          <span className={`px-2 py-0.5 rounded-full text-xs font-bold ${
-                            isPaid
-                              ? 'bg-emerald-100 text-emerald-700'
-                              : 'bg-slate-100 text-slate-500'
+                          <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                            isPaid ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'
                           }`}>
                             {isPaid ? 'Paid' : 'Free'}
                           </span>
                         );
                       })()}
                     </div>
-                    
-                    <div className="flex items-center justify-between text-sm text-slate-500 mb-2">
-                      <div className="flex items-center gap-1 min-w-0 flex-1">
-                        {(profile.city || profile.state || profile.country) && (
-                          <>
-                            <MapPin className="w-4 h-4 text-purple-600 flex-shrink-0" />
-                            <span className="truncate">
-                              {[profile.city, profile.state, profile.country]
-                                .filter(Boolean)
-                                .join(' , ')}
-                            </span>
-                          </>
-                        )}
+
+                    {(profile.city || profile.state) && (
+                      <div className="flex items-center gap-1 text-xs text-slate-500 mt-0.5 truncate">
+                        <MapPin className="w-3 h-3 text-violet-600 flex-shrink-0" />
+                        <span className="truncate">
+                          {[profile.city, profile.state].filter(Boolean).join(', ')}
+                        </span>
                         {profile.zipDistance !== null && profile.zipDistance !== undefined && (
-                          <span className="text-purple-600 font-semibold flex-shrink-0 ml-1">
+                          <span className="text-purple-600 font-semibold flex-shrink-0">
                             • {profile.zipDistance.toFixed(1)} mi
                           </span>
                         )}
                       </div>
-                      <span className={`ml-2 px-2 py-0.5 rounded-full text-xs font-medium whitespace-nowrap flex-shrink-0 ${
-                        profile.is_popped_up 
-                          ? 'bg-green-100 text-green-700' 
-                          : 'bg-slate-100 text-slate-500'
-                      }`}>
-                        {profile.is_popped_up ? 'Popped Up' : 'Popped Down'}
-                      </span>
-                    </div>
+                    )}
 
                     {profile.interests && profile.interests.length > 0 && (
-                      <div className="flex flex-wrap gap-1 mb-2">
-                        {profile.interests.slice(0, 3).map((interest, idx) => (
-                          <span key={idx} className="px-2 py-0.5 bg-violet-100 text-violet-700 rounded-full text-xs">
+                      <div className="flex items-center gap-1 mt-1 flex-wrap">
+                        {profile.interests.slice(0, 2).map((interest, idx) => (
+                          <span key={idx} className="px-1.5 py-0.5 bg-violet-100 text-violet-700 rounded text-[10px]">
                             {interest}
                           </span>
                         ))}
-                        {profile.interests.length > 3 && (
-                          <span className="px-2 py-0.5 bg-slate-100 text-slate-500 rounded-full text-xs">
-                            +{profile.interests.length - 3}
+                        {profile.interests.length > 2 && (
+                          <span className="text-[10px] text-slate-500">
+                            +{profile.interests.length - 2}
                           </span>
                         )}
                       </div>
                     )}
 
-                    {profile.bio && (
-                      <p className="text-sm text-slate-600 line-clamp-2">{profile.bio}</p>
-                    )}
-
-                    {profile.is_popped_up && profile.popup_message && (
-                      <div className="mt-3 p-2 bg-violet-50 rounded-lg">
-                        <p className="text-xs text-violet-700 italic line-clamp-2">
-                          "{profile.popup_message}"
-                        </p>
+                    {profile.interested_in && (
+                      <div className="text-xs text-slate-500 mt-1">
+                        <span className="font-semibold text-slate-700">Looking for:</span> {profile.interested_in}
                       </div>
                     )}
+
+                    {profile.bio && (
+                      <p className="text-xs text-slate-600 line-clamp-2 mt-0.5">
+                        {profile.bio}
+                      </p>
+                    )}
                   </div>
+
+
+
                   {blockedUsers.some(b => b.blocked_email === profile.user_email) && (
-                    <div className="absolute inset-0 bg-black/20 rounded-2xl flex items-center justify-center">
-                      <span className="bg-slate-800 text-white px-3 py-1 rounded-lg text-xs font-semibold">Blocked</span>
+                    <div className="absolute inset-0 bg-black/20 rounded-xl flex items-center justify-center">
+                      <span className="bg-slate-800 text-white px-2 py-1 rounded text-[10px] font-semibold">Blocked</span>
                     </div>
                   )}
                 </div>
