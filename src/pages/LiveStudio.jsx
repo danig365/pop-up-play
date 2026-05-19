@@ -1,7 +1,7 @@
 // @ts-nocheck
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowLeft, Loader2, Radio, Trash2, Users, RefreshCcw } from 'lucide-react';
+import { ArrowLeft, Camera, CameraOff, Loader2, Mic, MicOff, Radio, Square, Trash2, Users, RefreshCcw } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { createPageUrl } from '@/utils';
@@ -13,6 +13,7 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { toast } from 'sonner';
+import { Room, RoomEvent } from 'livekit-client';
 
 const API_BASE_URL = getApiBaseUrl();
 
@@ -36,8 +37,7 @@ const initialForm = {
   title: '',
   description: '',
   thumbnail_url: '',
-  stream_provider: 'restream',
-  stream_id: '',
+  room_name: '',
   access_type: 'paid',
   price_usd: '9.99',
   status: 'draft',
@@ -46,8 +46,16 @@ const initialForm = {
 
 export default function LiveStudio() {
   const queryClient = useQueryClient();
+  const roomRef = React.useRef(null);
+  const localPreviewRef = React.useRef(null);
   const [editingId, setEditingId] = useState('');
   const [formData, setFormData] = useState(initialForm);
+  const [broadcastEventId, setBroadcastEventId] = useState('');
+  const [broadcastState, setBroadcastState] = useState('disconnected');
+  const [broadcastError, setBroadcastError] = useState('');
+  const [isBroadcastConnecting, setIsBroadcastConnecting] = useState(false);
+  const [cameraEnabled, setCameraEnabled] = useState(false);
+  const [microphoneEnabled, setMicrophoneEnabled] = useState(false);
   const [watchersByEvent, setWatchersByEvent] = useState({});
   const [loadingWatchersFor, setLoadingWatchersFor] = useState('');
   const [expandedWatchersFor, setExpandedWatchersFor] = useState('');
@@ -75,20 +83,198 @@ export default function LiveStudio() {
     },
   });
 
-  if (user && user.role !== 'admin') {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-violet-50 via-white to-rose-50 flex items-center justify-center p-4">
-        <div className="bg-white rounded-2xl shadow-lg p-8 max-w-md text-center">
-          <Radio className="w-10 h-10 text-fuchsia-400 mx-auto mb-4" />
-          <h2 className="text-xl font-bold text-slate-800 mb-2">Admin Access Required</h2>
-          <p className="text-slate-500 mb-6">Only admin users can start and manage livestream events.</p>
-          <Link to={createPageUrl('LiveEvents')}>
-            <Button className="rounded-xl bg-fuchsia-600 hover:bg-fuchsia-700 text-white">Browse Live Events</Button>
-          </Link>
-        </div>
-      </div>
+  const activeBroadcastEvent = useMemo(
+    () => events.find((event) => event.id === broadcastEventId) || null,
+    [broadcastEventId, events]
+  );
+
+  const activeBroadcastRoomName = useMemo(
+    () => String(activeBroadcastEvent?.room_name || activeBroadcastEvent?.stream_id || formData.room_name || '').trim(),
+    [activeBroadcastEvent, formData.room_name]
+  );
+
+  const resetBroadcastPreview = useCallback(() => {
+    const video = localPreviewRef.current;
+    if (video) {
+      video.srcObject = null;
+      video.removeAttribute('src');
+      video.load?.();
+    }
+  }, []);
+
+  const attachLocalPreview = useCallback((room) => {
+    const video = localPreviewRef.current;
+    if (!video || !room) return;
+
+    const publication = Array.from(room.localParticipant.videoTrackPublications.values()).find(
+      (candidate) => candidate?.track
     );
-  }
+
+    if (publication?.track) {
+      publication.track.attach(video);
+      video.muted = true;
+      video.playsInline = true;
+      video.autoplay = true;
+    }
+  }, []);
+
+  const stopBroadcast = useCallback(async (options = {}) => {
+    const { quiet = false } = options;
+    const room = roomRef.current;
+    roomRef.current = null;
+
+    try {
+      if (room) {
+        try {
+          await room.localParticipant.setCameraEnabled(false);
+        } catch {
+          // ignore camera shutdown errors
+        }
+        try {
+          await room.localParticipant.setMicrophoneEnabled(false);
+        } catch {
+          // ignore mic shutdown errors
+        }
+        await room.disconnect();
+      }
+    } catch (disconnectError) {
+      if (!quiet) {
+        toast.error(disconnectError?.message || 'Failed to stop the broadcast');
+      }
+    } finally {
+      resetBroadcastPreview();
+      setBroadcastState('disconnected');
+      setBroadcastError('');
+      setIsBroadcastConnecting(false);
+      setCameraEnabled(false);
+      setMicrophoneEnabled(false);
+      if (!quiet) {
+        toast.success('Broadcast stopped.');
+      }
+    }
+  }, [resetBroadcastPreview]);
+
+  const connectBroadcast = useCallback(async () => {
+    if (!activeBroadcastEvent) {
+      setBroadcastError('Select an event first.');
+      return;
+    }
+
+    if (!activeBroadcastRoomName) {
+      setBroadcastError('This event does not have a room name yet.');
+      return;
+    }
+
+    setIsBroadcastConnecting(true);
+    setBroadcastError('');
+
+    try {
+      await stopBroadcast({ quiet: true });
+
+      // simple retry/backoff for transient network issues
+      let attempts = 0;
+      const maxAttempts = Number(process.env.REACT_APP_LIVEKIT_BROADCAST_CONNECT_RETRIES || 3);
+      let lastErr = null;
+
+      while (attempts < maxAttempts) {
+        attempts += 1;
+        try {
+          const resp = await fetch(`${API_BASE_URL}/livekit/token`, {
+            method: 'POST',
+            headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify({ roomName: activeBroadcastRoomName }),
+          });
+          const data = await resp.json().catch(() => ({}));
+          if (!resp.ok) throw new Error(data?.error || 'Failed to create LiveKit token');
+
+          const room = new Room({ adaptiveStream: true, dynacast: true });
+
+          room.on(RoomEvent.ConnectionStateChanged, (state) => {
+            setBroadcastState(String(state || 'unknown'));
+            // when reconnected, make sure camera/mic are re-enabled
+            if (String(state) === 'connected') {
+              try {
+                room.localParticipant.setCameraEnabled(true).catch(() => {});
+                room.localParticipant.setMicrophoneEnabled(true).catch(() => {});
+              } catch (e) {}
+            }
+          });
+
+          room.on(RoomEvent.Disconnected, () => {
+            resetBroadcastPreview();
+            setBroadcastState('disconnected');
+            setCameraEnabled(false);
+            setMicrophoneEnabled(false);
+          });
+
+          roomRef.current = room;
+          setBroadcastState('connecting');
+
+          await room.connect(data.livekitUrl, data.token);
+
+          const cameraPublication = await room.localParticipant.setCameraEnabled(true);
+          await room.localParticipant.setMicrophoneEnabled(true);
+
+          attachLocalPreview(room);
+          if (cameraPublication?.track) {
+            cameraPublication.track.attach(localPreviewRef.current);
+          }
+
+          setCameraEnabled(true);
+          setMicrophoneEnabled(true);
+          setBroadcastState('connected');
+          await setStatusMutation.mutateAsync({ id: activeBroadcastEvent.id, status: 'live' });
+          toast.success(`Broadcast connected to ${activeBroadcastRoomName}.`);
+          lastErr = null;
+          break;
+        } catch (err) {
+          lastErr = err;
+          const backoff = Math.min(5000, 500 * attempts);
+          await new Promise((r) => setTimeout(r, backoff));
+        }
+      }
+
+      if (lastErr) {
+        throw lastErr;
+      }
+    } catch (connectError) {
+      await stopBroadcast({ quiet: true });
+      setBroadcastError(connectError?.message || 'Unable to start the broadcast');
+      toast.error(connectError?.message || 'Unable to start the broadcast');
+    } finally {
+      setIsBroadcastConnecting(false);
+    }
+  }, [activeBroadcastEvent, activeBroadcastRoomName, attachLocalPreview, resetBroadcastPreview, setStatusMutation, stopBroadcast]);
+
+  const toggleCamera = useCallback(async () => {
+    const room = roomRef.current;
+    if (!room) return;
+
+    const nextValue = !cameraEnabled;
+    try {
+      const publication = await room.localParticipant.setCameraEnabled(nextValue);
+      setCameraEnabled(nextValue);
+      if (nextValue && publication?.track) {
+        resetBroadcastPreview();
+        publication.track.attach(localPreviewRef.current);
+      }
+    } catch (cameraError) {
+      toast.error(cameraError?.message || 'Unable to update camera');
+    }
+  }, [cameraEnabled, resetBroadcastPreview]);
+
+  const toggleMicrophone = useCallback(async () => {
+    const room = roomRef.current;
+    if (!room) return;
+
+    const nextValue = !microphoneEnabled;
+    try {
+      await room.localParticipant.setMicrophoneEnabled(nextValue);
+      setMicrophoneEnabled(nextValue);
+    } catch (microphoneError) {
+      toast.error(microphoneError?.message || 'Unable to update microphone');
+    }
+  }, [microphoneEnabled]);
 
   const createOrUpdateMutation = useMutation({
     mutationFn: async (payload) => {
@@ -106,9 +292,12 @@ export default function LiveStudio() {
       if (!resp.ok) throw new Error(data?.error || 'Failed to save live event');
       return data;
     },
-    onSuccess: async () => {
+    onSuccess: async (data) => {
       await queryClient.invalidateQueries({ queryKey: ['liveEventsManage'] });
       toast.success(editingId ? 'Live event updated.' : 'Live event created.');
+      if (data?.id) {
+        setBroadcastEventId(data.id);
+      }
       setEditingId('');
       setFormData(initialForm);
     },
@@ -143,9 +332,10 @@ export default function LiveStudio() {
       if (!resp.ok) throw new Error(data?.error || 'Failed to delete live event');
       return data;
     },
-    onSuccess: async () => {
+    onSuccess: async (_data, deletedId) => {
       await queryClient.invalidateQueries({ queryKey: ['liveEventsManage'] });
       toast.success('Live event deleted.');
+      setBroadcastEventId((current) => (current === deletedId ? '' : current));
       if (editingId) {
         setEditingId('');
         setFormData(initialForm);
@@ -154,9 +344,21 @@ export default function LiveStudio() {
     onError: (error) => toast.error(error?.message || 'Delete failed'),
   });
 
+  useEffect(() => {
+    if (!broadcastEventId && events[0]?.id) {
+      setBroadcastEventId(events[0].id);
+    }
+  }, [broadcastEventId, events]);
+
+  useEffect(() => {
+    return () => {
+      stopBroadcast({ quiet: true });
+    };
+  }, [stopBroadcast]);
+
   const canSubmit = useMemo(() => {
     if (!formData.title.trim()) return false;
-    if (!formData.stream_id.trim()) return false;
+    if (!formData.room_name.trim()) return false;
     if (formData.access_type === 'paid' && Number(formData.price_usd) < 0) return false;
     return !createOrUpdateMutation.isPending;
   }, [formData, createOrUpdateMutation.isPending]);
@@ -167,8 +369,8 @@ export default function LiveStudio() {
       title: formData.title.trim(),
       description: formData.description.trim(),
       thumbnail_url: formData.thumbnail_url.trim(),
-      stream_provider: formData.stream_provider,
-      stream_id: formData.stream_id.trim(),
+      stream_provider: 'livekit',
+      room_name: formData.room_name.trim(),
       access_type: formData.access_type,
       price_usd: formData.access_type === 'free' ? 0 : Number(formData.price_usd || 0),
       status: formData.status,
@@ -179,12 +381,12 @@ export default function LiveStudio() {
 
   const startEdit = (event) => {
     setEditingId(event.id);
+    setBroadcastEventId(event.id);
     setFormData({
       title: event.title || '',
       description: event.description || '',
       thumbnail_url: event.thumbnail_url || '',
-      stream_provider: event.stream_provider || 'restream',
-      stream_id: event.stream_id || '',
+      room_name: event.room_name || event.stream_id || '',
       access_type: event.access_type || 'paid',
       price_usd: String(event.price_usd ?? '0'),
       status: event.status || 'draft',
@@ -228,6 +430,21 @@ export default function LiveStudio() {
     return () => clearInterval(timer);
   }, [expandedWatchersFor, loadWatchers]);
 
+  if (user && user.role !== 'admin') {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-violet-50 via-white to-rose-50 flex items-center justify-center p-4">
+        <div className="bg-white rounded-2xl shadow-lg p-8 max-w-md text-center">
+          <Radio className="w-10 h-10 text-fuchsia-400 mx-auto mb-4" />
+          <h2 className="text-xl font-bold text-slate-800 mb-2">Admin Access Required</h2>
+          <p className="text-slate-500 mb-6">Only admin users can start and manage livestream events.</p>
+          <Link to={createPageUrl('LiveEvents')}>
+            <Button className="rounded-xl bg-fuchsia-600 hover:bg-fuchsia-700 text-white">Browse Live Events</Button>
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-violet-50 via-white to-rose-50">
       <header className="sticky top-0 z-50 bg-white/80 backdrop-blur-lg border-b border-slate-100">
@@ -251,8 +468,130 @@ export default function LiveStudio() {
           <div className="w-14 h-14 rounded-full bg-fuchsia-100 flex items-center justify-center mb-4">
             <Radio className="w-7 h-7 text-fuchsia-600" />
           </div>
-          <h2 className="text-2xl font-bold text-slate-900">{editingId ? 'Edit Live Event' : 'Create Live Event'}</h2>
-          <p className="text-slate-500 mt-2 mb-5">Configure free or paid stream events for your audience.</p>
+          <h2 className="text-2xl font-bold text-slate-900">Broadcast Control</h2>
+          <p className="text-slate-500 mt-2 mb-5">Select an event, join its LiveKit room, and publish camera and microphone from the browser.</p>
+
+          <div className="grid gap-6 lg:grid-cols-[1.1fr_0.9fr]">
+            <div className="space-y-4">
+              <div>
+                <Label htmlFor="broadcast-event">Broadcast event</Label>
+                <Select value={broadcastEventId} onValueChange={setBroadcastEventId}>
+                  <SelectTrigger id="broadcast-event" className="mt-1 rounded-xl">
+                    <SelectValue placeholder={events.length ? 'Choose an event' : 'Create an event first'} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {events.map((event) => (
+                      <SelectItem key={event.id} value={event.id}>
+                        {event.title} • {event.room_name || event.stream_id || 'room not set'}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="rounded-2xl border border-slate-200 bg-slate-950 overflow-hidden">
+                <div className="flex items-center justify-between px-4 py-3 border-b border-white/10 text-white">
+                  <div>
+                    <p className="text-sm font-semibold">{activeBroadcastEvent?.title || 'No event selected'}</p>
+                    <p className="text-xs text-white/70">Room: {activeBroadcastRoomName || 'set a room name in the event form below'}</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-xs uppercase tracking-[0.2em] text-white/60">State</p>
+                    <p className="text-sm font-semibold capitalize text-white">{broadcastState}</p>
+                  </div>
+                </div>
+                <div className="aspect-video bg-black">
+                  <video ref={localPreviewRef} className="h-full w-full object-cover bg-black" autoPlay playsInline muted />
+                </div>
+              </div>
+
+              {broadcastError ? (
+                <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+                  {broadcastError}
+                </div>
+              ) : null}
+
+              <div className="flex flex-wrap gap-3">
+                <Button
+                  type="button"
+                  onClick={connectBroadcast}
+                  disabled={isBroadcastConnecting || !activeBroadcastEvent || !activeBroadcastRoomName}
+                  className="rounded-xl bg-fuchsia-600 hover:bg-fuchsia-700 text-white"
+                >
+                  {isBroadcastConnecting ? (
+                    <>
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      Connecting...
+                    </>
+                  ) : (
+                    'Start Broadcast'
+                  )}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => stopBroadcast()}
+                  disabled={!roomRef.current}
+                  className="rounded-xl"
+                >
+                  <Square className="w-4 h-4 mr-2" />
+                  Stop Broadcast
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={toggleCamera}
+                  disabled={!roomRef.current}
+                  className="rounded-xl"
+                >
+                  {cameraEnabled ? <CameraOff className="w-4 h-4 mr-2" /> : <Camera className="w-4 h-4 mr-2" />}
+                  {cameraEnabled ? 'Disable Camera' : 'Enable Camera'}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={toggleMicrophone}
+                  disabled={!roomRef.current}
+                  className="rounded-xl"
+                >
+                  {microphoneEnabled ? <MicOff className="w-4 h-4 mr-2" /> : <Mic className="w-4 h-4 mr-2" />}
+                  {microphoneEnabled ? 'Mute Mic' : 'Unmute Mic'}
+                </Button>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 space-y-3">
+              <div className="flex items-center justify-between text-sm text-slate-600">
+                <span>Connected room</span>
+                <span className="font-semibold text-slate-900 truncate max-w-[12rem] text-right">{activeBroadcastRoomName || 'None'}</span>
+              </div>
+              <div className="flex items-center justify-between text-sm text-slate-600">
+                <span>Camera</span>
+                <span className="font-semibold text-slate-900">{cameraEnabled ? 'On' : 'Off'}</span>
+              </div>
+              <div className="flex items-center justify-between text-sm text-slate-600">
+                <span>Microphone</span>
+                <span className="font-semibold text-slate-900">{microphoneEnabled ? 'On' : 'Off'}</span>
+              </div>
+              <div className="flex items-center justify-between text-sm text-slate-600">
+                <span>Selected event</span>
+                <span className="font-semibold text-slate-900 truncate max-w-[12rem] text-right">{activeBroadcastEvent?.title || 'None'}</span>
+              </div>
+              <p className="text-xs text-slate-500 leading-6">
+                The selected event must already have a room name. When you start broadcasting, the event status is automatically set to live.
+              </p>
+            </div>
+          </div>
+        </motion.div>
+
+        <motion.div
+          initial={{ opacity: 0, y: 16 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.05 }}
+          className="bg-white rounded-2xl shadow-lg p-6"
+        >
+          <h3 className="text-xl font-bold text-slate-900 mb-4">{editingId ? 'Edit Live Event' : 'Create Live Event'}</h3>
+          <p className="text-slate-500 mb-5">Event details still drive access rules. Use a room name that you can share with LiveKit.</p>
 
           <form className="space-y-4" onSubmit={handleSubmit}>
             <div>
@@ -280,23 +619,13 @@ export default function LiveStudio() {
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
-                <Label htmlFor="live-provider">Stream provider</Label>
+                <Label htmlFor="live-room-name">Room name</Label>
                 <Input
-                  id="live-provider"
-                  value={formData.stream_provider}
-                  onChange={(e) => setFormData((p) => ({ ...p, stream_provider: e.target.value }))}
+                  id="live-room-name"
+                  value={formData.room_name}
+                  onChange={(e) => setFormData((p) => ({ ...p, room_name: e.target.value }))}
                   className="mt-1 rounded-xl"
-                  placeholder="restream"
-                />
-              </div>
-              <div>
-                <Label htmlFor="live-stream-id">Stream ID</Label>
-                <Input
-                  id="live-stream-id"
-                  value={formData.stream_id}
-                  onChange={(e) => setFormData((p) => ({ ...p, stream_id: e.target.value }))}
-                  className="mt-1 rounded-xl"
-                  placeholder="Restream player ID or full Restream player URL"
+                  placeholder="live-event-friday-night"
                 />
               </div>
               <div>
@@ -318,6 +647,23 @@ export default function LiveStudio() {
                   onChange={(e) => setFormData((p) => ({ ...p, scheduled_at: e.target.value }))}
                   className="mt-1 rounded-xl"
                 />
+              </div>
+              <div>
+                <Label>Status</Label>
+                <Select
+                  value={formData.status}
+                  onValueChange={(value) => setFormData((p) => ({ ...p, status: value }))}
+                >
+                  <SelectTrigger className="mt-1 rounded-xl">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="draft">Draft</SelectItem>
+                    <SelectItem value="upcoming">Upcoming</SelectItem>
+                    <SelectItem value="live">Live</SelectItem>
+                    <SelectItem value="ended">Ended</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
             </div>
 
@@ -353,21 +699,10 @@ export default function LiveStudio() {
               </div>
 
               <div>
-                <Label>Status</Label>
-                <Select
-                  value={formData.status}
-                  onValueChange={(value) => setFormData((p) => ({ ...p, status: value }))}
-                >
-                  <SelectTrigger className="mt-1 rounded-xl">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="draft">Draft</SelectItem>
-                    <SelectItem value="upcoming">Upcoming</SelectItem>
-                    <SelectItem value="live">Live</SelectItem>
-                    <SelectItem value="ended">Ended</SelectItem>
-                  </SelectContent>
-                </Select>
+                <Label>Room source</Label>
+                <div className="mt-1 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600">
+                  LiveKit
+                </div>
               </div>
             </div>
 
@@ -404,7 +739,7 @@ export default function LiveStudio() {
         <motion.div
           initial={{ opacity: 0, y: 16 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.05 }}
+          transition={{ delay: 0.1 }}
           className="bg-white rounded-2xl shadow-lg p-6"
         >
           <h3 className="text-xl font-bold text-slate-900 mb-4">My Live Events</h3>
@@ -441,6 +776,14 @@ export default function LiveStudio() {
                   </p>
 
                   <div className="flex flex-wrap gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="rounded-xl"
+                      onClick={() => setBroadcastEventId(event.id)}
+                    >
+                      Broadcast
+                    </Button>
                     <Button type="button" variant="outline" className="rounded-xl" onClick={() => startEdit(event)}>
                       Edit
                     </Button>

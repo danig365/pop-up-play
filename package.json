@@ -66,6 +66,8 @@
     "input-otp": "^1.4.2",
     "jsonwebtoken": "^9.0.3",
     "jspdf": "^2.5.2",
+    "livekit-client": "^2.19.0",
+    "livekit-server-sdk": "^2.15.3",
     "lodash": "^4.17.21",
     "lucide-react": "^0.475.0",
     "moment": "^2.30.1",

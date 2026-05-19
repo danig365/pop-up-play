@@ -33,6 +33,7 @@ import LiveStudio from './pages/LiveStudio';
 import LiveEvents from './pages/LiveEvents';
 import LiveEventDetail from './pages/LiveEventDetail';
 import LiveWatch from './pages/LiveWatch';
+import LiveKitTest from './pages/LiveKitTest';
 import __Layout from './Layout.jsx';
 
 
@@ -72,6 +73,7 @@ export const PAGES = {
     "LiveEvents": LiveEvents,
     "LiveEventDetail": LiveEventDetail,
     "LiveWatch": LiveWatch,
+    "LiveKitTest": LiveKitTest,
 }
 
 export const pagesConfig = {

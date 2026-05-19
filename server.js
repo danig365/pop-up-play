@@ -16,6 +16,7 @@ import { fileURLToPath } from 'url';
 import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+import { AccessToken } from 'livekit-server-sdk';
 
 dotenv.config();
 
@@ -65,6 +66,9 @@ const GOOGLE_CLIENT_ID = normalizeGoogleClientId(
   process.env.GOOGLE_CLIENT_ID || process.env.VITE_GOOGLE_CLIENT_ID
 );
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
+const LIVEKIT_URL = String(process.env.LIVEKIT_URL || '').trim();
+const LIVEKIT_API_KEY = String(process.env.LIVEKIT_API_KEY || '').trim();
+const LIVEKIT_API_SECRET = String(process.env.LIVEKIT_API_SECRET || '').trim();
 
 const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(64).toString('hex');
 const JWT_EXPIRES_IN = '7d';
@@ -105,6 +109,15 @@ function verifyToken(token) {
   } catch {
     return null;
   }
+}
+
+function sanitizeLiveKitRoomName(rawValue) {
+  return String(rawValue || '')
+    .trim()
+    .replace(/[^a-zA-Z0-9_-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 64);
 }
 
 /**
@@ -1138,7 +1151,8 @@ async function runMigrations() {
           title VARCHAR(255) NOT NULL,
           description TEXT,
           thumbnail_url TEXT,
-          stream_provider VARCHAR(50) NOT NULL DEFAULT 'restream',
+          stream_provider VARCHAR(50) NOT NULL DEFAULT 'livekit',
+          room_name VARCHAR(255) NOT NULL,
           stream_id VARCHAR(255) NOT NULL,
           access_type VARCHAR(20) NOT NULL DEFAULT 'paid',
           price_usd DECIMAL(10, 2) DEFAULT 0,
@@ -1169,7 +1183,22 @@ async function runMigrations() {
       }
 
       try {
-        await pool.query(`ALTER TABLE "LiveEvent" ALTER COLUMN stream_provider SET DEFAULT 'restream'`);
+        await pool.query(`ALTER TABLE "LiveEvent" ALTER COLUMN stream_provider SET DEFAULT 'livekit'`);
+      } catch (e) {
+      }
+
+      try {
+        await pool.query(`ALTER TABLE "LiveEvent" ADD COLUMN IF NOT EXISTS room_name VARCHAR(255)`);
+      } catch (e) {
+      }
+
+      try {
+        await pool.query(`UPDATE "LiveEvent" SET room_name = COALESCE(NULLIF(room_name, ''), NULLIF(stream_id, '')) WHERE COALESCE(room_name, '') = ''`);
+      } catch (e) {
+      }
+
+      try {
+        await pool.query(`ALTER TABLE "LiveEvent" ALTER COLUMN room_name SET NOT NULL`);
       } catch (e) {
       }
 
@@ -1484,14 +1513,24 @@ function parseOptionalTimestamp(value) {
   return date.toISOString();
 }
 
+function normalizeLiveKitRoomName(rawValue) {
+  return String(rawValue ?? '')
+    .trim()
+    .replace(/[^a-zA-Z0-9_-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 64);
+}
+
 function normalizeLiveEventInput(raw = {}, { isUpdate = false } = {}) {
   const errors = [];
 
   const title = String(raw.title ?? '').trim();
   const description = String(raw.description ?? '').trim();
   const thumbnail_url = String(raw.thumbnail_url ?? '').trim();
-  const stream_provider = String(raw.stream_provider ?? 'restream').trim().toLowerCase() || 'restream';
-  const stream_id = String(raw.stream_id ?? '').trim();
+  const stream_provider = 'livekit';
+  const room_name = normalizeLiveKitRoomName(raw.room_name ?? raw.stream_id ?? '');
+  const stream_id = room_name;
 
   const access_type_raw = String(raw.access_type ?? 'paid').trim().toLowerCase();
   const access_type = LIVE_EVENT_ACCESS_TYPES.has(access_type_raw) ? access_type_raw : null;
@@ -1514,7 +1553,7 @@ function normalizeLiveEventInput(raw = {}, { isUpdate = false } = {}) {
 
   if (!isUpdate) {
     if (!title) errors.push('title');
-    if (!stream_id) errors.push('stream_id');
+    if (!room_name) errors.push('room_name');
   }
 
   return {
@@ -1524,6 +1563,7 @@ function normalizeLiveEventInput(raw = {}, { isUpdate = false } = {}) {
       description,
       thumbnail_url,
       stream_provider,
+      room_name,
       stream_id,
       access_type,
       price_usd: access_type === 'free' ? 0 : price_usd,
@@ -1533,9 +1573,8 @@ function normalizeLiveEventInput(raw = {}, { isUpdate = false } = {}) {
       ends_at,
     },
   };
-}
 
-// ============ Admin Setup Route ============
+}
 
 // Setup admin user endpoint
 app.post('/api/admin/setup', async (req, res) => {
@@ -3445,6 +3484,110 @@ app.get('/api/users/search', authenticateUser, async (req, res) => {
   }
 });
 
+// ============ LiveKit Phase 1 ============
+
+app.post('/api/livekit/token', authenticateUser, async (req, res) => {
+  try {
+    if (!LIVEKIT_URL || !LIVEKIT_API_KEY || !LIVEKIT_API_SECRET) {
+      return res.status(503).json({
+        error: 'LiveKit is not configured on the server.',
+      });
+    }
+
+    const roomName = sanitizeLiveKitRoomName(req.body?.roomName);
+    if (!roomName) {
+      return res.status(400).json({ error: 'roomName is required' });
+    }
+
+    const identity = String(req.authenticatedUser?.email || req.authenticatedUser?.id || '').trim();
+    if (!identity) {
+      return res.status(400).json({ error: 'Authenticated user identity is required' });
+    }
+
+    const canPublish = String(req.authenticatedUser?.role || '').toLowerCase() === 'admin';
+
+    // rate limit token requests per IP+room to avoid abuse
+    const rateLimitKey = `${req.ip || req.headers['x-forwarded-for'] || 'unknown'}:${roomName}`;
+    if (!global.__livekitRateLimiter) global.__livekitRateLimiter = new Map();
+    const limiter = global.__livekitRateLimiter;
+    const now = Date.now();
+    const windowMs = Number(process.env.LIVEKIT_TOKEN_RATE_WINDOW_MS || 60000); // 1 minute
+    const maxPerWindow = Number(process.env.LIVEKIT_TOKEN_RATE_MAX || 6);
+    const entry = limiter.get(rateLimitKey) || { count: 0, expiresAt: now + windowMs };
+    if (now > entry.expiresAt) {
+      entry.count = 0;
+      entry.expiresAt = now + windowMs;
+    }
+    entry.count += 1;
+    limiter.set(rateLimitKey, entry);
+    if (entry.count > maxPerWindow) {
+      return res.status(429).json({ error: 'Rate limit exceeded for token requests' });
+    }
+
+    const ttlSeconds = canPublish
+      ? Number(process.env.LIVEKIT_BROADCAST_TOKEN_TTL_SECONDS || 120)
+      : Number(process.env.LIVEKIT_VIEWER_TOKEN_TTL_SECONDS || 300);
+
+    const token = new AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET, {
+      identity,
+      name: String(req.authenticatedUser?.name || identity).trim().slice(0, 120),
+      metadata: JSON.stringify({
+        email: req.authenticatedUser?.email || '',
+        role: req.authenticatedUser?.role || 'user',
+      }),
+      ttl: Number.isFinite(Number(ttlSeconds)) ? Number(ttlSeconds) : 300,
+    });
+
+    token.addGrant({
+      roomJoin: true,
+      room: roomName,
+      canPublish,
+      canSubscribe: true,
+      canPublishData: canPublish,
+    });
+
+    // audit token issuance (append-only)
+    try {
+      const logsDir = path.join(process.cwd(), 'logs');
+      if (!fs.existsSync(logsDir)) fs.mkdirSync(logsDir, { recursive: true });
+      const auditLine = JSON.stringify({ time: new Date().toISOString(), identity, ip: req.ip || req.headers['x-forwarded-for'] || null, roomName, canPublish }) + '\n';
+      fs.appendFile(path.join(logsDir, 'livekit_tokens.log'), auditLine, () => {});
+    } catch (e) {
+      console.error('Failed to write livekit token audit log', e?.message || e);
+    }
+
+    return res.json({
+      livekitUrl: LIVEKIT_URL,
+      roomName,
+      identity,
+      canPublish,
+      token: await token.toJwt(),
+    });
+  } catch (error) {
+    console.error('❌ [livekit/token POST] Error:', error.message);
+    return res.status(500).json({ error: 'Failed to create LiveKit token' });
+  }
+});
+
+// Healthcheck and LiveKit quick status
+app.get('/api/health', async (req, res) => {
+  try {
+    let dbOk = false;
+    try {
+      const r = await pool.query('SELECT 1');
+      dbOk = !!r;
+    } catch (e) {
+      dbOk = false;
+    }
+
+    const livekitConfigured = Boolean(LIVEKIT_URL && LIVEKIT_API_KEY && LIVEKIT_API_SECRET);
+
+    return res.json({ ok: true, db: dbOk, livekit: livekitConfigured });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err?.message || 'health check failed' });
+  }
+});
+
 // ============ Live Studio (Phase 2) ============
 
 // Admin management listing
@@ -3469,8 +3612,8 @@ app.post('/api/live-events/manage', authenticateUser, requireAdmin, async (req, 
 
     const created = await pool.query(
       `INSERT INTO "LiveEvent"
-       (host_email, title, description, thumbnail_url, stream_provider, stream_id, access_type, price_usd, status, scheduled_at, starts_at, ends_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+       (host_email, title, description, thumbnail_url, stream_provider, room_name, stream_id, access_type, price_usd, status, scheduled_at, starts_at, ends_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
        RETURNING *`,
       [
         req.authenticatedUser.email,
@@ -3478,6 +3621,7 @@ app.post('/api/live-events/manage', authenticateUser, requireAdmin, async (req, 
         parsed.normalized.description,
         parsed.normalized.thumbnail_url,
         parsed.normalized.stream_provider,
+        parsed.normalized.room_name,
         parsed.normalized.stream_id,
         parsed.normalized.access_type,
         parsed.normalized.price_usd,
@@ -3518,21 +3662,23 @@ app.put('/api/live-events/manage/:id', authenticateUser, requireAdmin, async (re
            description = $2,
            thumbnail_url = $3,
            stream_provider = $4,
-           stream_id = $5,
-           access_type = $6,
-           price_usd = $7,
-           status = $8,
-           scheduled_at = $9,
-           starts_at = $10,
-           ends_at = $11,
+           room_name = $5,
+           stream_id = $6,
+           access_type = $7,
+           price_usd = $8,
+           status = $9,
+           scheduled_at = $10,
+           starts_at = $11,
+           ends_at = $12,
            updated_date = CURRENT_TIMESTAMP
-       WHERE id = $12
+       WHERE id = $13
        RETURNING *`,
       [
         parsed.normalized.title,
         parsed.normalized.description,
         parsed.normalized.thumbnail_url,
         parsed.normalized.stream_provider,
+        parsed.normalized.room_name,
         parsed.normalized.stream_id,
         parsed.normalized.access_type,
         parsed.normalized.price_usd,
@@ -3607,8 +3753,8 @@ app.get('/api/live-events/public', async (req, res) => {
     let result;
     if (statusFilter && LIVE_EVENT_STATUSES.has(statusFilter)) {
       result = await pool.query(
-        `SELECT id, host_email, title, description, thumbnail_url, stream_provider,
-                access_type, price_usd, status, scheduled_at, starts_at, ends_at,
+        `SELECT id, host_email, title, description, thumbnail_url, stream_provider, room_name,
+          access_type, price_usd, status, scheduled_at, starts_at, ends_at,
                 created_date, updated_date
          FROM "LiveEvent"
          WHERE status = $1
@@ -3619,8 +3765,8 @@ app.get('/api/live-events/public', async (req, res) => {
       );
     } else {
       result = await pool.query(
-        `SELECT id, host_email, title, description, thumbnail_url, stream_provider,
-                access_type, price_usd, status, scheduled_at, starts_at, ends_at,
+        `SELECT id, host_email, title, description, thumbnail_url, stream_provider, room_name,
+          access_type, price_usd, status, scheduled_at, starts_at, ends_at,
                 created_date, updated_date
          FROM "LiveEvent"
          WHERE status IN ('upcoming', 'live')
@@ -3643,6 +3789,7 @@ app.get('/api/live-events/public/:id', async (req, res) => {
     const { id } = req.params;
     const result = await pool.query(
       `SELECT le.id, le.host_email, le.title, le.description, le.thumbnail_url, le.stream_provider,
+              le.room_name,
               le.access_type, le.price_usd, le.status, le.scheduled_at, le.starts_at, le.ends_at,
               le.created_date, le.updated_date,
               up.display_name AS host_display_name,
@@ -4562,35 +4709,6 @@ async function capturePayPalLiveOrder(orderId) {
   return data;
 }
 
-function getLiveEmbedUrl(streamProvider, streamId) {
-  const provider = String(streamProvider || 'restream').trim().toLowerCase();
-  const cleanId = String(streamId || '').trim();
-  if (!cleanId) return '';
-
-  if (provider === 'youtube' || provider === 'youtube_live') {
-    return `https://www.youtube.com/embed/${encodeURIComponent(cleanId)}?autoplay=1&rel=0&modestbranding=1`;
-  }
-
-  if (provider === 'restream') {
-    if (cleanId.startsWith('http://') || cleanId.startsWith('https://')) {
-      try {
-        const parsed = new URL(cleanId);
-        const host = String(parsed.hostname || '').toLowerCase();
-        if (host === 'restream.io' || host === 'www.restream.io') {
-          return parsed.toString();
-        }
-      } catch {
-        return '';
-      }
-    }
-
-    return `https://restream.io/player/${encodeURIComponent(cleanId)}`;
-  }
-
-  // Unknown provider fallback to a safe, non-executable string
-  return '';
-}
-
 async function canUserAccessLiveEvent(event, authenticatedUser) {
   const userEmail = authenticatedUser?.email;
   if (!event || !userEmail) return false;
@@ -4670,14 +4788,14 @@ app.get('/api/live-events/:id/access', authenticateUser, async (req, res) => {
   }
 });
 
-// Watch-session endpoint: returns embed payload only for authorized users
+// Watch-session endpoint: returns LiveKit join payload for authorized users
 app.get('/api/live-events/:id/watch-session', authenticateUser, async (req, res) => {
   try {
     const { id } = req.params;
     const userEmail = req.authenticatedUser.email;
 
     const eventResult = await pool.query(
-      `SELECT id, host_email, title, stream_provider, stream_id, access_type, price_usd, status
+      `SELECT id, host_email, title, stream_provider, room_name, stream_id, access_type, price_usd, status
        FROM "LiveEvent"
        WHERE id = $1
        LIMIT 1`,
@@ -4710,19 +4828,79 @@ app.get('/api/live-events/:id/watch-session', authenticateUser, async (req, res)
       return res.status(403).json({ error: 'Access denied. Purchase is required for this live event.' });
     }
 
-    const embedUrl = getLiveEmbedUrl(event.stream_provider, event.stream_id);
-    if (!embedUrl) {
-      return res.status(400).json({ error: 'Stream provider is not configured correctly.' });
+    const roomName = sanitizeLiveKitRoomName(event.room_name || event.stream_id);
+    if (!LIVEKIT_URL || !LIVEKIT_API_KEY || !LIVEKIT_API_SECRET) {
+      return res.status(503).json({ error: 'LiveKit is not configured on the server.' });
+    }
+
+    if (!roomName) {
+      return res.status(400).json({ error: 'Stream room is not configured correctly.' });
+    }
+
+
+    const canPublish = req.authenticatedUser.role === 'admin' || isHost;
+
+    // rate limit watch-session token issuance per IP+event
+    const watchRateKey = `${req.ip || req.headers['x-forwarded-for'] || 'unknown'}:event:${id}`;
+    if (!global.__livekitRateLimiter) global.__livekitRateLimiter = new Map();
+    const wLimiter = global.__livekitRateLimiter;
+    const now = Date.now();
+    const wWindowMs = Number(process.env.LIVEKIT_TOKEN_RATE_WINDOW_MS || 60000);
+    const wMaxPerWindow = Number(process.env.LIVEKIT_TOKEN_RATE_MAX || 12);
+    const wEntry = wLimiter.get(watchRateKey) || { count: 0, expiresAt: now + wWindowMs };
+    if (now > wEntry.expiresAt) {
+      wEntry.count = 0;
+      wEntry.expiresAt = now + wWindowMs;
+    }
+    wEntry.count += 1;
+    wLimiter.set(watchRateKey, wEntry);
+    if (wEntry.count > wMaxPerWindow) {
+      return res.status(429).json({ error: 'Rate limit exceeded for watch session token requests' });
+    }
+
+    const ttlSeconds = canPublish
+      ? Number(process.env.LIVEKIT_BROADCAST_TOKEN_TTL_SECONDS || 120)
+      : Number(process.env.LIVEKIT_VIEWER_TOKEN_TTL_SECONDS || 300);
+
+    const token = new AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET, {
+      identity: userEmail,
+      name: String(req.authenticatedUser?.name || userEmail).trim().slice(0, 120),
+      metadata: JSON.stringify({
+        email: userEmail,
+        role: req.authenticatedUser.role || 'user',
+        event_id: id,
+      }),
+      ttl: Number.isFinite(Number(ttlSeconds)) ? Number(ttlSeconds) : 300,
+    });
+
+    token.addGrant({
+      roomJoin: true,
+      room: roomName,
+      canPublish,
+      canSubscribe: true,
+      canPublishData: canPublish,
+    });
+
+    try {
+      const logsDir = path.join(process.cwd(), 'logs');
+      if (!fs.existsSync(logsDir)) fs.mkdirSync(logsDir, { recursive: true });
+      const auditLine = JSON.stringify({ time: new Date().toISOString(), identity: userEmail, ip: req.ip || req.headers['x-forwarded-for'] || null, roomName, event_id: id, canPublish }) + '\n';
+      fs.appendFile(path.join(logsDir, 'livekit_tokens.log'), auditLine, () => {});
+    } catch (e) {
+      console.error('Failed to write livekit token audit log', e?.message || e);
     }
 
     return res.json({
       event_id: event.id,
       title: event.title,
       status: event.status,
-      stream_provider: event.stream_provider,
-      embed_url: embedUrl,
+      stream_provider: 'livekit',
       access_type: event.access_type,
       price_usd: Number(event.price_usd || 0),
+      livekit_url: LIVEKIT_URL,
+      livekit_token: await token.toJwt(),
+      room_name: roomName,
+      can_publish: canPublish,
     });
   } catch (error) {
     console.error('❌ [live-events/:id/watch-session GET] Error:', error.message);
