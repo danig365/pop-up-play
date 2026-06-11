@@ -36,7 +36,9 @@ export default function AccessCodeManager() {
   const { data: accessCodes = [], isLoading } = useQuery({
     queryKey: ['accessCodes'],
     queryFn: () => base44.entities.AccessCode.list('-created_date'),
-    enabled: !!user
+    enabled: !!user,
+    refetchInterval: 10000,
+    refetchOnWindowFocus: true
   });
 
   const generateMutation = useMutation({

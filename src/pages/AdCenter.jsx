@@ -15,10 +15,10 @@ import { toast } from 'sonner';
 
 const API_BASE_URL = getApiBaseUrl();
 const DURATION_OPTIONS = [
-  { label: '30 days', value: '30' },
-  { label: '60 days', value: '60' },
-  { label: '90 days', value: '90' },
-  { label: '1 year', value: '365' },
+  { label: '30 days', value: '30', price: 49 },
+  { label: '60 days', value: '60', price: 89 },
+  { label: '90 days', value: '90', price: 129 },
+  { label: '1 year', value: '365', price: 399 },
 ];
 
 function getAuthHeaders(extra = {}) {
@@ -386,11 +386,22 @@ export default function AdCenter() {
                 </SelectTrigger>
                 <SelectContent>
                   {DURATION_OPTIONS.map((opt) => (
-                    <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
+                    <SelectItem key={opt.value} value={opt.value}>
+                      {opt.label} — ${opt.price}
+                    </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </div>
+
+            {(() => {
+              const selectedOpt = DURATION_OPTIONS.find((o) => o.value === formData.duration_days);
+              return selectedOpt ? (
+                <p className="text-sm text-slate-600 font-medium">
+                  Total: <span className="text-fuchsia-700 font-bold">${selectedOpt.price}</span> for {selectedOpt.label}
+                </p>
+              ) : null;
+            })()}
 
             <Button
               type="submit"

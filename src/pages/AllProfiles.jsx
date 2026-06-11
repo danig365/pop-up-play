@@ -5,6 +5,7 @@ import { motion } from 'framer-motion';
 import { ArrowLeft, MapPin, Loader2, Filter, Pencil, Trash2, Save, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Link, useNavigate } from 'react-router-dom';
 import { createPageUrl } from '@/utils';
@@ -28,6 +29,16 @@ const stateMapping = {
   'virginia': 'VA', 'washington': 'WA', 'west virginia': 'WV', 'wisconsin': 'WI', 'wyoming': 'WY'
 };
 
+const GENDER_OPTIONS = [
+  { value: 'all', label: 'All genders' },
+  { value: 'male', label: 'Male' },
+  { value: 'female', label: 'Female' },
+  { value: 'couple', label: 'Couple' },
+  { value: 'transgender', label: 'Transgender' },
+  { value: 'non-binary', label: 'Non-binary' },
+  { value: 'prefer-not-to-say', label: 'Prefer not to say' }
+];
+
 // Note: bulkGeocodeProfiles, calculateDistanceMiles, getProfileCoords imported from @/lib/zipGeocode
 
 export default function AllProfiles() {
@@ -42,6 +53,7 @@ export default function AllProfiles() {
   const [screenNameFilter, setScreenNameFilter] = useState('');
   const [interestFilter, setInterestFilter] = useState('');
   const [locationFilter, setLocationFilter] = useState('');
+  const [genderFilter, setGenderFilter] = useState('all');
   const [profilesWithDistance, setProfilesWithDistance] = useState([]);
   const [visibleCount, setVisibleCount] = useState(INITIAL_PROFILES_TO_SHOW);
   const [distanceProgress, setDistanceProgress] = useState({ resolved: 0, total: 0 });
@@ -201,15 +213,18 @@ export default function AllProfiles() {
     const savedScreenName = sessionStorage.getItem('allProfiles_screenNameFilter');
     const savedInterest = sessionStorage.getItem('allProfiles_interestFilter');
     const savedLocation = sessionStorage.getItem('allProfiles_locationFilter');
+    const savedGender = sessionStorage.getItem('allProfiles_genderFilter');
     if (savedScrollY !== null) {
       sessionStorage.removeItem('allProfiles_scrollY');
       sessionStorage.removeItem('allProfiles_visibleCount');
       sessionStorage.removeItem('allProfiles_screenNameFilter');
       sessionStorage.removeItem('allProfiles_interestFilter');
       sessionStorage.removeItem('allProfiles_locationFilter');
+      sessionStorage.removeItem('allProfiles_genderFilter');
       if (savedScreenName) setScreenNameFilter(savedScreenName);
       if (savedInterest) setInterestFilter(savedInterest);
       if (savedLocation) setLocationFilter(savedLocation);
+      if (savedGender) setGenderFilter(savedGender);
       const count = Math.max(INITIAL_PROFILES_TO_SHOW, parseInt(savedCount || String(INITIAL_PROFILES_TO_SHOW), 10));
       pendingRestoreCountRef.current = count;
       setVisibleCount(count);
@@ -249,22 +264,35 @@ export default function AllProfiles() {
     enabled: !!user?.email
   });
 
-  // Admin-only: fetch all subscriptions to show Free/Paid on each card
+  // Admin-only: fetch all subscriptions directly from the server so badges match the live DB.
   const { data: allSubscriptions = [] } = useQuery({
-    queryKey: ['allSubscriptions'],
-    queryFn: async () => base44.entities.UserSubscription.list(),
+    queryKey: ['adminProfileSubscriptions'],
+    queryFn: async () => {
+      const response = await fetch(`${getApiBaseUrl()}/admin/profile-subscriptions`, {
+        headers: {
+          Authorization: `Bearer ${localStorage.getItem('popup_auth_token')}`,
+        },
+      });
+      const data = await response.json().catch(() => []);
+      if (!response.ok) throw new Error(data?.error || 'Failed to load subscription statuses');
+      return Array.isArray(data) ? data : [];
+    },
     enabled: user?.role === 'admin',
+    refetchInterval: 30000,
+    refetchOnWindowFocus: true,
   });
 
   // Build a quick lookup map: user_email -> subscription status
   const subscriptionMap = React.useMemo(() => {
     const map = {};
     allSubscriptions.forEach(sub => {
+      const emailKey = String(sub.user_email || '').trim().toLowerCase();
+      if (!emailKey) return;
       // Keep the most relevant (active > trial > others)
-      const existing = map[sub.user_email];
+      const existing = map[emailKey];
       const isPriority = (s) => s === 'active' || s === 'trial';
       if (!existing || (!isPriority(existing.status) && isPriority(sub.status))) {
-        map[sub.user_email] = sub;
+        map[emailKey] = sub;
       }
     });
     return map;
@@ -370,6 +398,10 @@ export default function AllProfiles() {
         )
       );
     }
+
+    if (genderFilter !== 'all') {
+      profiles = profiles.filter(p => String(p.gender || '').toLowerCase() === genderFilter);
+    }
     
     // Filter by location
     if (locationFilter.trim()) {
@@ -404,14 +436,14 @@ export default function AllProfiles() {
     });
     
     return selfProfile ? [selfProfile, ...profiles] : profiles;
-  }, [profilesWithDistance, screenNameFilter, interestFilter, locationFilter, user?.email, originalOrderMap]);
+  }, [profilesWithDistance, screenNameFilter, interestFilter, locationFilter, genderFilter, user?.email, originalOrderMap]);
 
   useEffect(() => {
     if (pendingRestoreCountRef.current !== null) {
       return;
     }
     setVisibleCount(INITIAL_PROFILES_TO_SHOW);
-  }, [screenNameFilter, interestFilter, locationFilter, allProfiles.length]);
+  }, [screenNameFilter, interestFilter, locationFilter, genderFilter, allProfiles.length]);
 
   useEffect(() => {
     if (isLoading) return;
@@ -523,7 +555,8 @@ export default function AllProfiles() {
               )}
             </div>
           </div>
-          
+
+
           <div className="bg-white rounded-2xl shadow-sm p-4">
             <div className="flex items-center gap-3">
               <MapPin className="w-5 h-5 text-purple-400" />
@@ -541,6 +574,48 @@ export default function AllProfiles() {
                   Clear
                 </Button>
               )}
+            </div>
+          </div>
+
+          <div className="hidden md:block bg-white rounded-2xl shadow-sm p-4">
+            <div className="flex items-center gap-3">
+              <Filter className="w-5 h-5 text-purple-600" />
+              <Select value={genderFilter} onValueChange={setGenderFilter}>
+                <SelectTrigger className="flex-1 h-9 rounded-xl border-purple-200 focus:border-purple-400 text-base md:text-sm bg-white">
+                  <SelectValue placeholder="All genders" />
+                </SelectTrigger>
+                <SelectContent>
+                  {GENDER_OPTIONS.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          <div className="md:hidden bg-white rounded-2xl shadow-sm p-4">
+            <div className="flex items-center gap-3">
+              <Filter className="w-5 h-5 text-purple-600" />
+              <div className="flex-1 overflow-x-auto">
+                <div className="flex items-center gap-2 min-w-max py-0.5">
+                  {GENDER_OPTIONS.map((option) => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      onClick={() => setGenderFilter(option.value)}
+                      className={`px-3 py-1 rounded-full text-xs font-semibold border transition-colors ${
+                        genderFilter === option.value
+                          ? 'bg-violet-600 text-white border-violet-600'
+                          : 'bg-white text-slate-600 border-slate-200'
+                      }`}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
             </div>
           </div>
         </motion.div>
@@ -589,6 +664,7 @@ export default function AllProfiles() {
                   sessionStorage.setItem('allProfiles_screenNameFilter', screenNameFilter);
                   sessionStorage.setItem('allProfiles_interestFilter', interestFilter);
                   sessionStorage.setItem('allProfiles_locationFilter', locationFilter);
+                  sessionStorage.setItem('allProfiles_genderFilter', genderFilter);
                   navigate(
                     createPageUrl('Profile') +
                     '?user=' + encodeURIComponent(profile.user_email) +
@@ -654,7 +730,7 @@ export default function AllProfiles() {
                         <span className="px-1.5 py-0.5 rounded text-xs font-semibold bg-violet-100 text-violet-700">You</span>
                       )}
                       {user?.role === 'admin' && (() => {
-                        const sub = subscriptionMap[profile.user_email];
+                        const sub = subscriptionMap[String(profile.user_email || '').trim().toLowerCase()];
                         const isPaid = sub && (sub.status === 'active' || sub.status === 'trial');
                         return (
                           <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${

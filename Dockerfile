@@ -14,11 +14,8 @@ COPY . .
 # Build the frontend
 RUN npm run build
 
-# Install serve to serve static files
-RUN npm install -g serve
-
 # Expose ports (3000 for frontend, 3001 for API)
 EXPOSE 3000 3001
 
-# Start both frontend and backend
-CMD ["sh", "-c", "serve -s dist -l 3000 & node server.js"]
+# Start the backend (serves both API and built frontend)
+CMD ["node", "server.js"]

@@ -1335,11 +1335,49 @@ app.use(bodyParser.urlencoded({ extended: true, limit: '250mb' }));
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const uploadsDir = path.join(__dirname, 'uploads');
+const legacyUploadsDir = process.env.LEGACY_UPLOADS_DIR || path.join(__dirname, 'legacy_uploads');
+
+function listUploadFiles(dirPath) {
+  try {
+    return fs.readdirSync(dirPath, { withFileTypes: true })
+      .filter((entry) => entry.isFile())
+      .map((entry) => entry.name);
+  } catch {
+    return [];
+  }
+}
+
+function seedUploadsFromLegacySource() {
+  const currentFiles = listUploadFiles(uploadsDir);
+  if (currentFiles.length > 0) {
+    return;
+  }
+
+  const legacyFiles = listUploadFiles(legacyUploadsDir);
+  if (legacyFiles.length === 0) {
+    return;
+  }
+
+  for (const fileName of legacyFiles) {
+    const sourcePath = path.join(legacyUploadsDir, fileName);
+    const targetPath = path.join(uploadsDir, fileName);
+
+    if (!fs.existsSync(targetPath)) {
+      fs.copyFileSync(sourcePath, targetPath);
+    }
+  }
+
+  console.log(`📁 Seeded ${legacyFiles.length} files from legacy uploads mount into ${uploadsDir}`);
+}
 
 // Create uploads directory if it doesn't exist
 if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
 }
+if (!fs.existsSync(legacyUploadsDir)) {
+  fs.mkdirSync(legacyUploadsDir, { recursive: true });
+}
+seedUploadsFromLegacySource();
 console.log('📁 Uploads directory:', uploadsDir);
 
 // Serve uploaded files statically
@@ -2465,7 +2503,7 @@ app.post('/api/auth/logout', async (req, res) => {
 app.post('/api/access-code/redeem', authenticateUser, async (req, res) => {
   try {
     const { code } = req.body;
-    const userEmail = req.authenticatedUser.email;
+    const userEmail = String(req.authenticatedUser.email || '').trim().toLowerCase();
 
     if (!code || typeof code !== 'string') {
       return res.status(400).json({ error: 'Access code is required' });
@@ -2860,6 +2898,34 @@ app.get('/api/entities/:table/:id', authenticateUser, async (req, res) => {
   } catch (error) {
     console.error(`❌ Get error for table ${req.params.table}:`, error.message);
     res.status(500).json({ error: error.message });
+  }
+});
+
+// Admin-only snapshot of profile subscription status, joined directly from Postgres.
+app.get('/api/admin/profile-subscriptions', authenticateUser, async (req, res) => {
+  try {
+    if (req.authenticatedUser.role !== 'admin') {
+      return res.status(403).json({ error: 'Forbidden: admin access required' });
+    }
+
+    const result = await pool.query(`
+      SELECT DISTINCT ON (LOWER(us.user_email))
+        LOWER(us.user_email) AS user_email,
+        us.status,
+        us.start_date,
+        us.end_date,
+        us.created_date,
+        us.updated_date,
+        u.role
+      FROM "UserSubscription" us
+      LEFT JOIN "User" u ON LOWER(u.email) = LOWER(us.user_email)
+      ORDER BY LOWER(us.user_email), us.updated_date DESC NULLS LAST, us.created_date DESC NULLS LAST
+    `);
+
+    return res.json(result.rows);
+  } catch (error) {
+    console.error('❌ [admin/profile-subscriptions GET] Error:', error.message);
+    return res.status(500).json({ error: 'Failed to load profile subscriptions' });
   }
 });
 
@@ -3656,6 +3722,7 @@ app.put('/api/live-events/manage/:id', authenticateUser, requireAdmin, async (re
       return res.status(400).json({ error: 'Invalid live event payload', fields: parsed.errors });
     }
 
+    console.info('[live-events/manage PUT] id:', id);
     const updated = await pool.query(
       `UPDATE "LiveEvent"
        SET title = $1,
@@ -3713,11 +3780,11 @@ app.post('/api/live-events/manage/:id/status', authenticateUser, requireAdmin, a
     const nowIso = new Date().toISOString();
     const updated = await pool.query(
       `UPDATE "LiveEvent"
-       SET status = $1,
-           starts_at = CASE WHEN $1 = 'live' AND starts_at IS NULL THEN $2 ELSE starts_at END,
-           ends_at = CASE WHEN $1 = 'ended' THEN $2 ELSE ends_at END,
+       SET status = $1::varchar,
+           starts_at = CASE WHEN $1::varchar = 'live' AND starts_at IS NULL THEN $2::timestamp ELSE starts_at END,
+           ends_at = CASE WHEN $1::varchar = 'ended' THEN $2::timestamp ELSE ends_at END,
            updated_date = CURRENT_TIMESTAMP
-       WHERE id = $3
+       WHERE id = $3::uuid
        RETURNING *`,
       [status, nowIso, id]
     );
@@ -4170,7 +4237,7 @@ app.get('/api/broadcast/recent', authenticateUser, requireAdmin, async (req, res
 // POST /api/functions/getSubscriptionStatus - Check user subscription status
 app.post('/api/functions/getSubscriptionStatus', authenticateUserStrict, async (req, res) => {
   try {
-    const userEmail = req.authenticatedUser.email;
+    const userEmail = String(req.authenticatedUser.email || '').trim().toLowerCase();
 
     // Check if user is admin - admins bypass subscription requirements
     const userResult = await pool.query(
@@ -5953,6 +6020,15 @@ app.post('/api/test/proximity-email', async (req, res) => {
   }
 });
 
+// Serve built frontend SPA (must be after all API routes)
+const distDir = path.join(__dirname, 'dist');
+if (fs.existsSync(distDir)) {
+  app.use(express.static(distDir));
+  app.get('/{*splat}', (req, res) => {
+    res.sendFile(path.join(distDir, 'index.html'));
+  });
+}
+
 // ============ Start Server ============
 
 const server = app.listen(PORT, async () => {
@@ -5964,3 +6040,11 @@ const server = app.listen(PORT, async () => {
   // Auto pop-down disabled — users stay popped up until they manually pop down.
   console.log('ℹ️ Auto pop-down is disabled. Users stay popped up until they choose to pop down.');
 });
+
+// Also listen on port 3000 so the frontend and /api/uploads/ are served from the same origin
+const FRONTEND_PORT = 3000;
+if (Number(PORT) !== FRONTEND_PORT) {
+  app.listen(FRONTEND_PORT, () => {
+    console.log(`🌐 Frontend server on port ${FRONTEND_PORT}`);
+  });
+}

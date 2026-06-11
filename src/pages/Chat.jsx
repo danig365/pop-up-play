@@ -31,15 +31,22 @@ const resolveSectionBackUrl = (rawBackTo) => {
 };
 
 export default function Chat() {
-  const [user, setUser] = useState(null);
-  const [selectedConversation, setSelectedConversation] = useState(null);
-  const [backUrl, setBackUrl] = useState(createPageUrl('Menu'));
   const location = useLocation();
+  const chatParams = new URLSearchParams(location.search);
+  const initialSelectedConversation = sanitizeEmail(chatParams.get('user')) || null;
+  if (initialSelectedConversation) {
+    try {
+      sessionStorage.removeItem('chatWithUser');
+    } catch (e) {}
+  }
+  const openedFromProfile = chatParams.get('from') === 'profile';
+
+  const [user, setUser] = useState(null);
+  const [selectedConversation, setSelectedConversation] = useState(initialSelectedConversation);
+  const [backUrl, setBackUrl] = useState(createPageUrl('Menu'));
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { guardAction } = useSubscription();
-  const chatParams = new URLSearchParams(location.search);
-  const openedFromProfile = chatParams.get('from') === 'profile';
 
   // Check for user parameter in URL and determine back button destination
   useEffect(() => {
@@ -153,14 +160,18 @@ export default function Chat() {
     return Array.from(conversationMap.values());
   }, [allMessages, user?.email, blockedUsers]);
 
-  // Auto-select conversation if user parameter provided
+  // Auto-select conversation if a stored chat target exists and no explicit user param was provided
   useEffect(() => {
+    if (selectedConversation) return;
+    const params = new URLSearchParams(location.search);
+    // If URL explicitly contains a user param, prefer that and don't read sessionStorage
+    if (params.get('user')) return;
     const targetUser = sessionStorage.getItem('chatWithUser');
     if (targetUser && user?.email && normalizeEmail(targetUser) !== normalizeEmail(user.email)) {
       setSelectedConversation(targetUser);
-      sessionStorage.removeItem('chatWithUser');
+      try { sessionStorage.removeItem('chatWithUser'); } catch (e) {}
     }
-  }, [user?.email]);
+  }, [user?.email, selectedConversation]);
 
   const { data: profiles = [] } = useQuery({
     queryKey: ['allProfiles'],

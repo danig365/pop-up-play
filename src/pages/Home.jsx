@@ -1,5 +1,5 @@
 // @ts-nocheck
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { base44 } from '@/api/base44Client';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
@@ -9,7 +9,7 @@ import LocationService from '@/components/location/LocationService';
 import MapSoundNotifications from '@/components/map/MapSoundNotifications';
 import { Link } from 'react-router-dom';
 import { createPageUrl } from '@/utils';
-import { User, Settings, Sparkles, X, ExternalLink } from 'lucide-react';
+import { User, Settings, Sparkles, X, ExternalLink, Radio, Filter } from 'lucide-react';
 import reelsImage from '@/assets/image-removebg-preview.png';
 
 // Preload the reels image immediately
@@ -17,6 +17,7 @@ const preloadImg = new Image();
 preloadImg.src = reelsImage;
 import { Textarea } from '@/components/ui/textarea';
 import { Button } from '@/components/ui/button';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useNavigate } from 'react-router-dom';
 import ScrollControl from '@/components/map/ScrollControl';
 import NavigationMenu from '@/components/navigation/NavigationMenu';
@@ -27,6 +28,16 @@ import { getApiBaseUrl } from '@/lib/apiUrl';
 
 const API_BASE_URL = getApiBaseUrl();
 
+const GENDER_OPTIONS = [
+  { value: 'all', label: 'All genders' },
+  { value: 'male', label: 'Male' },
+  { value: 'female', label: 'Female' },
+  { value: 'couple', label: 'Couple' },
+  { value: 'transgender', label: 'Transgender' },
+  { value: 'non-binary', label: 'Non-binary' },
+  { value: 'prefer-not-to-say', label: 'Prefer not to say' }
+];
+
 export default function Home() {
   const [user, setUser] = useState(null);
   const [userLocation, setUserLocation] = useState(null);
@@ -35,6 +46,7 @@ export default function Home() {
   const [locationError, setLocationError] = useState('');
   const [adIndex, setAdIndex] = useState(0);
   const [openAd, setOpenAd] = useState(null);
+  const [genderFilter, setGenderFilter] = useState('all');
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const { guardAction } = useSubscription();
@@ -50,6 +62,17 @@ export default function Home() {
     };
     loadUser();
   }, []);
+
+  useEffect(() => {
+    const savedGender = sessionStorage.getItem('home_genderFilter');
+    if (savedGender) {
+      setGenderFilter(savedGender);
+    }
+  }, []);
+
+  useEffect(() => {
+    sessionStorage.setItem('home_genderFilter', genderFilter);
+  }, [genderFilter]);
 
   const { data: myProfile, isLoading: profileLoading } = useQuery({
     queryKey: ['myProfile', user?.email],
@@ -70,6 +93,11 @@ export default function Home() {
     },
     refetchInterval: 30000 // Refresh every 30 seconds
   });
+
+  const filteredActiveUsers = useMemo(() => {
+    if (genderFilter === 'all') return activeUsers;
+    return activeUsers.filter((profile) => profile.gender === genderFilter);
+  }, [activeUsers, genderFilter]);
 
   const { data: unreadMessagesRaw = [] } = useQuery({
     queryKey: ['unreadMessagesList', user?.email],
@@ -99,6 +127,17 @@ export default function Home() {
       return Array.isArray(data) ? data : [];
     },
     refetchInterval: 60000,
+  });
+
+  const { data: liveNowCount = 0 } = useQuery({
+    queryKey: ['liveNowCountHome'],
+    queryFn: async () => {
+      const resp = await fetch(`${API_BASE_URL}/live-events/public?status=live`);
+      const data = await resp.json().catch(() => []);
+      if (!resp.ok) return 0;
+      return Array.isArray(data) ? data.length : 0;
+    },
+    refetchInterval: 15000,
   });
 
   useEffect(() => {
@@ -304,6 +343,23 @@ export default function Home() {
 
           <div className="flex items-center gap-2">
             <NavigationMenu unreadCount={unreadCount} />
+            {user?.role !== 'admin' && (
+              <Link to={createPageUrl('LiveEvents')} className="inline-flex flex-col items-center gap-0.5">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="rounded-full bg-slate-100 hover:bg-slate-200 relative"
+                >
+                  <Radio className="w-5 h-5 text-red-600" />
+                  {liveNowCount > 0 && (
+                    <span className="absolute -top-1 -right-1 min-w-[1rem] h-4 px-1 rounded-full bg-red-600 text-white text-[10px] leading-4 text-center font-semibold">
+                      {liveNowCount > 9 ? '9+' : liveNowCount}
+                    </span>
+                  )}
+                </Button>
+                <span className="text-[10px] font-medium leading-none text-red-600">Live</span>
+              </Link>
+            )}
             <Link to={createPageUrl('Dashboard')}>
               <Button variant="ghost" size="icon" className="rounded-full">
                 <Settings className="w-5 h-5 text-slate-600" />
@@ -411,15 +467,43 @@ export default function Home() {
             />
           </motion.div>
 
+          <motion.div
+            className="mb-6 relative z-10"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.12 }}>
+            <div className="flex items-center gap-3 px-4 py-3 bg-white rounded-xl shadow-sm border border-slate-100">
+              <div className="bg-purple-400 rounded-full w-8 h-8 from-violet-500 to-purple-500 flex items-center justify-center">
+                <Filter className="text-black w-4 h-4" />
+              </div>
+              <p className="text-sm font-medium text-slate-800 flex-1 min-w-0">Filter By Gender</p>
+              <div className="w-40">
+                <Select value={genderFilter} onValueChange={setGenderFilter}>
+                  <SelectTrigger className="h-9 rounded-lg border-slate-200 bg-white">
+                    <SelectValue placeholder="All genders" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {GENDER_OPTIONS.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>
+                        {option.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+          </motion.div>
+
           {/* Map */}
           <motion.div
-            className="h-[60vh] rounded-2xl overflow-hidden shadow-2xl mb-8 relative"
+            className="h-[60vh] rounded-2xl overflow-hidden shadow-2xl mb-8 relative z-0"
             initial={{ opacity: 0, scale: 0.95 }}
             animate={{ opacity: 1, scale: 1 }}
             transition={{ delay: 0.2 }}>
 
             <CityMap
-              activeUsers={activeUsers}
+              activeUsers={filteredActiveUsers}
+              totalActiveCount={activeUsers.length}
               currentUserProfile={myProfile}
               userLocation={userLocation}
               unreadMessages={unreadMessages}

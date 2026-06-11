@@ -34,7 +34,12 @@ services:
     restart: unless-stopped
     volumes:
       - uploads_data:/app/uploads
+      - pop-up-play_uploads_data:/app/legacy_uploads:ro
 
 volumes:
   postgres_data:
+    name: postgres_data
   uploads_data:
+    name: uploads_data
+  pop-up-play_uploads_data:
+    name: pop-up-play_uploads_data

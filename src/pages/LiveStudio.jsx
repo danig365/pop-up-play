@@ -1,7 +1,7 @@
 // @ts-nocheck
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowLeft, Camera, CameraOff, Loader2, Mic, MicOff, Radio, Square, Trash2, Users, RefreshCcw } from 'lucide-react';
+import { ArrowLeft, Camera, CameraOff, ExternalLink, Loader2, Mic, MicOff, Radio, Square, Trash2, Users, RefreshCcw, Copy } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { createPageUrl } from '@/utils';
@@ -13,7 +13,7 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { toast } from 'sonner';
-import { Room, RoomEvent } from 'livekit-client';
+import { Room, RoomEvent, createLocalVideoTrack } from 'livekit-client';
 
 const API_BASE_URL = getApiBaseUrl();
 
@@ -56,6 +56,7 @@ export default function LiveStudio() {
   const [isBroadcastConnecting, setIsBroadcastConnecting] = useState(false);
   const [cameraEnabled, setCameraEnabled] = useState(false);
   const [microphoneEnabled, setMicrophoneEnabled] = useState(false);
+  const [cameraFacingMode, setCameraFacingMode] = useState('user');
   const [watchersByEvent, setWatchersByEvent] = useState({});
   const [loadingWatchersFor, setLoadingWatchersFor] = useState('');
   const [expandedWatchersFor, setExpandedWatchersFor] = useState('');
@@ -93,6 +94,23 @@ export default function LiveStudio() {
     [activeBroadcastEvent, formData.room_name]
   );
 
+  const shareWatchUrl = useMemo(() => {
+    if (!broadcastEventId) return '';
+    const path = `${createPageUrl('LiveWatch')}?id=${broadcastEventId}`;
+    if (typeof window === 'undefined') return path;
+    return `${window.location.origin}${path}`;
+  }, [broadcastEventId]);
+
+  const copyShareWatchUrl = useCallback(async () => {
+    if (!shareWatchUrl) return;
+    try {
+      await navigator.clipboard.writeText(shareWatchUrl);
+      toast.success('Share link copied.');
+    } catch {
+      toast.error('Unable to copy link.');
+    }
+  }, [shareWatchUrl]);
+
   const resetBroadcastPreview = useCallback(() => {
     const video = localPreviewRef.current;
     if (video) {
@@ -116,6 +134,37 @@ export default function LiveStudio() {
       video.playsInline = true;
       video.autoplay = true;
     }
+  }, []);
+
+  const publishCameraTrack = useCallback(async (room, facingMode) => {
+    if (!room) return null;
+
+    const currentPublications = Array.from(room.localParticipant.videoTrackPublications.values());
+    for (const publication of currentPublications) {
+      const track = publication?.track;
+      if (!track) continue;
+      try {
+        await room.localParticipant.unpublishTrack(track, true);
+      } catch {
+        // ignore unpublish errors when replacing camera source
+      }
+      try {
+        track.stop();
+      } catch {
+        // ignore stop errors
+      }
+    }
+
+    let localTrack = null;
+    try {
+      localTrack = await createLocalVideoTrack({ facingMode: { exact: facingMode } });
+    } catch {
+      localTrack = await createLocalVideoTrack({ facingMode });
+    }
+
+    await room.localParticipant.publishTrack(localTrack);
+    localTrack.attach(localPreviewRef.current);
+    return localTrack;
   }, []);
 
   const stopBroadcast = useCallback(async (options = {}) => {
@@ -148,6 +197,7 @@ export default function LiveStudio() {
       setIsBroadcastConnecting(false);
       setCameraEnabled(false);
       setMicrophoneEnabled(false);
+      setCameraFacingMode('user');
       if (!quiet) {
         toast.success('Broadcast stopped.');
       }
@@ -160,6 +210,12 @@ export default function LiveStudio() {
       return;
     }
 
+    if (roomRef.current || broadcastState === 'connected' || broadcastState === 'connecting') {
+      setBroadcastError('Broadcast is already running. Stop it before starting again.');
+      toast.error('Broadcast is already running. Stop it before starting again.');
+      return;
+    }
+
     if (!activeBroadcastRoomName) {
       setBroadcastError('This event does not have a room name yet.');
       return;
@@ -169,11 +225,9 @@ export default function LiveStudio() {
     setBroadcastError('');
 
     try {
-      await stopBroadcast({ quiet: true });
-
       // simple retry/backoff for transient network issues
       let attempts = 0;
-      const maxAttempts = Number(process.env.REACT_APP_LIVEKIT_BROADCAST_CONNECT_RETRIES || 3);
+      const maxAttempts = Number(import.meta.env.VITE_LIVEKIT_BROADCAST_CONNECT_RETRIES || 3);
       let lastErr = null;
 
       while (attempts < maxAttempts) {
@@ -194,7 +248,7 @@ export default function LiveStudio() {
             // when reconnected, make sure camera/mic are re-enabled
             if (String(state) === 'connected') {
               try {
-                room.localParticipant.setCameraEnabled(true).catch(() => {});
+                room.localParticipant.setCameraEnabled(true, { facingMode: cameraFacingMode }).catch(() => {});
                 room.localParticipant.setMicrophoneEnabled(true).catch(() => {});
               } catch (e) {}
             }
@@ -212,12 +266,12 @@ export default function LiveStudio() {
 
           await room.connect(data.livekitUrl, data.token);
 
-          const cameraPublication = await room.localParticipant.setCameraEnabled(true);
+          const cameraTrack = await publishCameraTrack(room, cameraFacingMode);
           await room.localParticipant.setMicrophoneEnabled(true);
 
           attachLocalPreview(room);
-          if (cameraPublication?.track) {
-            cameraPublication.track.attach(localPreviewRef.current);
+          if (cameraTrack) {
+            cameraTrack.attach(localPreviewRef.current);
           }
 
           setCameraEnabled(true);
@@ -244,7 +298,7 @@ export default function LiveStudio() {
     } finally {
       setIsBroadcastConnecting(false);
     }
-  }, [activeBroadcastEvent, activeBroadcastRoomName, attachLocalPreview, resetBroadcastPreview, setStatusMutation, stopBroadcast]);
+  }, [activeBroadcastEvent, activeBroadcastRoomName, attachLocalPreview, broadcastState, cameraFacingMode, publishCameraTrack, resetBroadcastPreview, stopBroadcast]);
 
   const toggleCamera = useCallback(async () => {
     const room = roomRef.current;
@@ -252,16 +306,42 @@ export default function LiveStudio() {
 
     const nextValue = !cameraEnabled;
     try {
-      const publication = await room.localParticipant.setCameraEnabled(nextValue);
+      let publication = null;
+      if (nextValue) {
+        publication = await publishCameraTrack(room, cameraFacingMode);
+      } else {
+        await room.localParticipant.setCameraEnabled(false);
+      }
       setCameraEnabled(nextValue);
-      if (nextValue && publication?.track) {
+      if (nextValue && publication) {
         resetBroadcastPreview();
-        publication.track.attach(localPreviewRef.current);
+        publication.attach(localPreviewRef.current);
       }
     } catch (cameraError) {
       toast.error(cameraError?.message || 'Unable to update camera');
     }
-  }, [cameraEnabled, resetBroadcastPreview]);
+  }, [cameraEnabled, cameraFacingMode, publishCameraTrack, resetBroadcastPreview]);
+
+  const switchCameraFacingMode = useCallback(async () => {
+    const nextFacingMode = cameraFacingMode === 'user' ? 'environment' : 'user';
+    const room = roomRef.current;
+
+    setCameraFacingMode(nextFacingMode);
+
+    if (!room || !cameraEnabled) {
+      return;
+    }
+
+    try {
+      const localTrack = await publishCameraTrack(room, nextFacingMode);
+      resetBroadcastPreview();
+      localTrack?.attach(localPreviewRef.current);
+      toast.success(nextFacingMode === 'environment' ? 'Switched to rear camera.' : 'Switched to front camera.');
+    } catch (error) {
+      setCameraFacingMode(cameraFacingMode);
+      toast.error(error?.message || 'Unable to switch camera.');
+    }
+  }, [cameraEnabled, cameraFacingMode, publishCameraTrack, resetBroadcastPreview]);
 
   const toggleMicrophone = useCallback(async () => {
     const room = roomRef.current;
@@ -400,7 +480,7 @@ export default function LiveStudio() {
   };
 
   const loadWatchers = useCallback(async (eventId, options = {}) => {
-    const { silent = false } = options;
+    const { silent = false, expand = true } = options;
     try {
       setLoadingWatchersFor(eventId);
       const resp = await fetch(`${API_BASE_URL}/live-events/${eventId}/watchers`, {
@@ -409,7 +489,9 @@ export default function LiveStudio() {
       const data = await resp.json().catch(() => ({}));
       if (!resp.ok) throw new Error(data?.error || 'Failed to load watchers');
       setWatchersByEvent((prev) => ({ ...prev, [eventId]: data }));
-      setExpandedWatchersFor(eventId);
+      if (expand) {
+        setExpandedWatchersFor(eventId);
+      }
     } catch (error) {
       if (!silent) {
         toast.error(error?.message || 'Unable to load watchers');
@@ -430,6 +512,18 @@ export default function LiveStudio() {
     return () => clearInterval(timer);
   }, [expandedWatchersFor, loadWatchers]);
 
+  // Auto-refresh watcher count for the currently selected broadcast event.
+  useEffect(() => {
+    if (!broadcastEventId) return;
+
+    loadWatchers(broadcastEventId, { silent: true, expand: false });
+    const timer = setInterval(() => {
+      loadWatchers(broadcastEventId, { silent: true, expand: false });
+    }, 10000);
+
+    return () => clearInterval(timer);
+  }, [broadcastEventId, loadWatchers]);
+
   if (user && user.role !== 'admin') {
     return (
       <div className="min-h-screen bg-gradient-to-br from-violet-50 via-white to-rose-50 flex items-center justify-center p-4">
@@ -446,9 +540,9 @@ export default function LiveStudio() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-violet-50 via-white to-rose-50">
+    <div className="min-h-screen bg-gradient-to-br from-violet-50 via-white to-rose-50 overflow-x-hidden">
       <header className="sticky top-0 z-50 bg-white/80 backdrop-blur-lg border-b border-slate-100">
-        <div className="max-w-3xl mx-auto px-4 py-4 flex items-center justify-between">
+        <div className="max-w-6xl mx-auto px-4 py-4 flex items-center justify-between">
           <Link to={createPageUrl('Menu')}>
             <Button variant="ghost" size="icon" className="rounded-full">
               <ArrowLeft className="w-5 h-5" />
@@ -459,11 +553,11 @@ export default function LiveStudio() {
         </div>
       </header>
 
-      <main className="max-w-3xl mx-auto px-4 py-8 space-y-6">
+      <main className="max-w-6xl mx-auto px-4 py-8 space-y-6">
         <motion.div
           initial={{ opacity: 0, y: 16 }}
           animate={{ opacity: 1, y: 0 }}
-          className="bg-white rounded-2xl shadow-lg p-6"
+          className="bg-white rounded-2xl shadow-lg p-4 sm:p-6"
         >
           <div className="w-14 h-14 rounded-full bg-fuchsia-100 flex items-center justify-center mb-4">
             <Radio className="w-7 h-7 text-fuchsia-600" />
@@ -471,15 +565,15 @@ export default function LiveStudio() {
           <h2 className="text-2xl font-bold text-slate-900">Broadcast Control</h2>
           <p className="text-slate-500 mt-2 mb-5">Select an event, join its LiveKit room, and publish camera and microphone from the browser.</p>
 
-          <div className="grid gap-6 lg:grid-cols-[1.1fr_0.9fr]">
-            <div className="space-y-4">
+          <div className="grid gap-4 lg:gap-6 lg:grid-cols-[minmax(0,1.5fr)_minmax(0,0.7fr)]">
+            <div className="space-y-4 min-w-0">
               <div>
                 <Label htmlFor="broadcast-event">Broadcast event</Label>
                 <Select value={broadcastEventId} onValueChange={setBroadcastEventId}>
                   <SelectTrigger id="broadcast-event" className="mt-1 rounded-xl">
                     <SelectValue placeholder={events.length ? 'Choose an event' : 'Create an event first'} />
                   </SelectTrigger>
-                  <SelectContent>
+                  <SelectContent className="z-[2000]">
                     {events.map((event) => (
                       <SelectItem key={event.id} value={event.id}>
                         {event.title} • {event.room_name || event.stream_id || 'room not set'}
@@ -490,18 +584,25 @@ export default function LiveStudio() {
               </div>
 
               <div className="rounded-2xl border border-slate-200 bg-slate-950 overflow-hidden">
-                <div className="flex items-center justify-between px-4 py-3 border-b border-white/10 text-white">
-                  <div>
+                <div className="flex items-start justify-between gap-3 px-4 py-3 border-b border-white/10 text-white">
+                  <div className="min-w-0">
                     <p className="text-sm font-semibold">{activeBroadcastEvent?.title || 'No event selected'}</p>
                     <p className="text-xs text-white/70">Room: {activeBroadcastRoomName || 'set a room name in the event form below'}</p>
                   </div>
-                  <div className="text-right">
+                  <div className="text-right shrink-0">
                     <p className="text-xs uppercase tracking-[0.2em] text-white/60">State</p>
                     <p className="text-sm font-semibold capitalize text-white">{broadcastState}</p>
                   </div>
                 </div>
-                <div className="aspect-video bg-black">
-                  <video ref={localPreviewRef} className="h-full w-full object-cover bg-black" autoPlay playsInline muted />
+                <div className="w-full h-[48vh] sm:h-[52vh] md:h-[58vh] lg:h-[66vh] bg-black overflow-hidden">
+                  <video
+                    ref={localPreviewRef}
+                    className="h-full w-full object-cover bg-black"
+                    style={{ transform: cameraFacingMode === 'user' ? 'scaleX(-1)' : 'none' }}
+                    autoPlay
+                    playsInline
+                    muted
+                  />
                 </div>
               </div>
 
@@ -511,12 +612,12 @@ export default function LiveStudio() {
                 </div>
               ) : null}
 
-              <div className="flex flex-wrap gap-3">
+              <div className="flex flex-wrap gap-2 sm:gap-3">
                 <Button
                   type="button"
                   onClick={connectBroadcast}
-                  disabled={isBroadcastConnecting || !activeBroadcastEvent || !activeBroadcastRoomName}
-                  className="rounded-xl bg-fuchsia-600 hover:bg-fuchsia-700 text-white"
+                  disabled={isBroadcastConnecting || roomRef.current || broadcastState === 'connected' || broadcastState === 'connecting' || !activeBroadcastEvent || !activeBroadcastRoomName}
+                  className="rounded-xl bg-fuchsia-600 hover:bg-fuchsia-700 text-white w-full sm:w-auto"
                 >
                   {isBroadcastConnecting ? (
                     <>
@@ -532,7 +633,7 @@ export default function LiveStudio() {
                   variant="outline"
                   onClick={() => stopBroadcast()}
                   disabled={!roomRef.current}
-                  className="rounded-xl"
+                  className="rounded-xl w-full sm:w-auto"
                 >
                   <Square className="w-4 h-4 mr-2" />
                   Stop Broadcast
@@ -542,25 +643,35 @@ export default function LiveStudio() {
                   variant="outline"
                   onClick={toggleCamera}
                   disabled={!roomRef.current}
-                  className="rounded-xl"
+                  className="rounded-xl w-full sm:w-auto"
                 >
-                  {cameraEnabled ? <CameraOff className="w-4 h-4 mr-2" /> : <Camera className="w-4 h-4 mr-2" />}
-                  {cameraEnabled ? 'Disable Camera' : 'Enable Camera'}
+                  {cameraEnabled ? <Camera className="w-4 h-4 mr-2" /> : <CameraOff className="w-4 h-4 mr-2" />}
+                  {cameraEnabled ? 'Camera On' : 'Camera Off'}
                 </Button>
-                <Button
+                                <Button
                   type="button"
                   variant="outline"
                   onClick={toggleMicrophone}
                   disabled={!roomRef.current}
-                  className="rounded-xl"
+                  className="rounded-xl w-full sm:w-auto"
                 >
-                  {microphoneEnabled ? <MicOff className="w-4 h-4 mr-2" /> : <Mic className="w-4 h-4 mr-2" />}
-                  {microphoneEnabled ? 'Mute Mic' : 'Unmute Mic'}
+                  {microphoneEnabled ? <Mic className="w-4 h-4 mr-2" /> : <MicOff className="w-4 h-4 mr-2" />}
+                  {microphoneEnabled ? 'Mic On' : 'Mic Muted'}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={switchCameraFacingMode}
+                  disabled={!roomRef.current || !cameraEnabled}
+                  className="rounded-xl w-full sm:w-auto"
+                >
+                  <RefreshCcw className="w-4 h-4 mr-2" />
+                  {cameraFacingMode === 'environment' ? 'Use Front Camera' : 'Use Rear Camera'}
                 </Button>
               </div>
             </div>
 
-            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 space-y-3">
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 space-y-3 min-w-0">
               <div className="flex items-center justify-between text-sm text-slate-600">
                 <span>Connected room</span>
                 <span className="font-semibold text-slate-900 truncate max-w-[12rem] text-right">{activeBroadcastRoomName || 'None'}</span>
@@ -576,6 +687,50 @@ export default function LiveStudio() {
               <div className="flex items-center justify-between text-sm text-slate-600">
                 <span>Selected event</span>
                 <span className="font-semibold text-slate-900 truncate max-w-[12rem] text-right">{activeBroadcastEvent?.title || 'None'}</span>
+              </div>
+              <div className="flex items-center justify-between text-sm text-slate-600">
+                <span>Watching now</span>
+                <span className="font-semibold text-slate-900">
+                  {broadcastEventId ? Number(watchersByEvent[broadcastEventId]?.active_count || 0) : 0}
+                </span>
+              </div>
+              <div className="pt-1">
+                <p className="text-xs text-slate-500 mb-2">Share watch link</p>
+                <div className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-700 break-all">
+                  {shareWatchUrl || 'Select an event to generate a watch link.'}
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mt-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="rounded-xl w-full"
+                    disabled={!broadcastEventId || loadingWatchersFor === broadcastEventId}
+                    onClick={() => loadWatchers(broadcastEventId, { expand: false })}
+                  >
+                    <Users className="w-4 h-4 mr-2" />
+                    {loadingWatchersFor === broadcastEventId ? 'Refreshing...' : 'Refresh Count'}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="rounded-xl w-full"
+                    disabled={!shareWatchUrl}
+                    onClick={copyShareWatchUrl}
+                  >
+                    <Copy className="w-4 h-4 mr-2" />
+                    Copy Link
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="rounded-xl w-full"
+                    disabled={!shareWatchUrl}
+                    onClick={() => window.open(shareWatchUrl, '_blank', 'noopener,noreferrer')}
+                  >
+                    <ExternalLink className="w-4 h-4 mr-2" />
+                    Open
+                  </Button>
+                </div>
               </div>
               <p className="text-xs text-slate-500 leading-6">
                 The selected event must already have a room name. When you start broadcasting, the event status is automatically set to live.

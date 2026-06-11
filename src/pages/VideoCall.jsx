@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { base44 } from '@/api/base44Client';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
-import { ArrowLeft, Video, VideoOff, Mic, MicOff, PhoneOff, Loader2 } from 'lucide-react';
+import { ArrowLeft, Video, VideoOff, Mic, MicOff, PhoneOff, Loader2, RotateCcw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { createPageUrl } from '@/utils';
@@ -17,6 +17,7 @@ export default function VideoCall() {
   const [isConnecting, setIsConnecting] = useState(true);
   const [isVideoEnabled, setIsVideoEnabled] = useState(true);
   const [isAudioEnabled, setIsAudioEnabled] = useState(true);
+  const [cameraFacingMode, setCameraFacingMode] = useState('user');
   const [callStatus, setCallStatus] = useState('initializing'); // initializing, calling, connecting, connected, ended
   const [backUrl, setBackUrl] = useState(createPageUrl('Home'));
   const [peerConnectionReady, setPeerConnectionReady] = useState(false); // Track if peer connection is fully set up
@@ -164,9 +165,9 @@ export default function VideoCall() {
         }
 
         // Get user media
-        console.log('🎤 [VideoCall] Requesting camera/microphone access...');
+        console.log('🎤 [VideoCall] Requesting camera/microphone access...', { facingMode: cameraFacingMode });
         const stream = await navigator.mediaDevices.getUserMedia({
-          video: true,
+          video: { facingMode: { ideal: cameraFacingMode } },
           audio: true
         });
         console.log('✅ [VideoCall] Camera/Microphone access granted');
@@ -610,6 +611,49 @@ export default function VideoCall() {
     }
   };
 
+  const switchCameraFacingMode = async () => {
+    if (!localStreamRef.current) return;
+
+    const nextFacingMode = cameraFacingMode === 'user' ? 'environment' : 'user';
+    try {
+      console.log('🎤 [VideoCall] Switching camera...', { nextFacingMode });
+      const cameraStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: nextFacingMode } }
+      });
+      const newVideoTrack = cameraStream.getVideoTracks()[0];
+      if (!newVideoTrack) {
+        throw new Error('No camera track available');
+      }
+
+      const pc = peerConnectionRef.current;
+      if (pc) {
+        const sender = pc.getSenders().find((s) => s.track?.kind === 'video');
+        if (sender) {
+          await sender.replaceTrack(newVideoTrack);
+          console.log('✅ [VideoCall] Replaced video track on peer connection');
+        }
+      }
+
+      const currentStream = localStreamRef.current;
+      const oldVideoTrack = currentStream.getVideoTracks()[0];
+      if (oldVideoTrack) {
+        currentStream.removeTrack(oldVideoTrack);
+        oldVideoTrack.stop();
+      }
+      currentStream.addTrack(newVideoTrack);
+      localStreamRef.current = currentStream;
+      if (localVideoRef.current) {
+        localVideoRef.current.srcObject = currentStream;
+      }
+
+      setCameraFacingMode(nextFacingMode);
+      toast.success(nextFacingMode === 'environment' ? 'Rear camera selected' : 'Front camera selected');
+    } catch (error) {
+      console.error('❌ [VideoCall] Camera switch failed:', error);
+      toast.error(error?.message || 'Unable to switch camera');
+    }
+  };
+
   const toggleAudio = () => {
     if (localStreamRef.current) {
       const audioTrack = localStreamRef.current.getAudioTracks()[0];
@@ -763,7 +807,8 @@ export default function VideoCall() {
             autoPlay
             playsInline
             muted
-            className="w-full h-full object-cover" />
+            className="w-full h-full object-cover"
+            style={{ transform: 'scaleX(-1)' }} />
 
           {!isVideoEnabled &&
           <div className="absolute inset-0 bg-slate-800 flex items-center justify-center">
@@ -793,8 +838,14 @@ export default function VideoCall() {
               </Button>
 
               <Button
-              size="icon"
-              onClick={endCall}
+              size="icon"              onClick={switchCameraFacingMode}
+              disabled={!localStreamRef.current}
+              className="rounded-full w-14 h-14 bg-slate-700 hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed">
+                <RotateCcw className="w-6 h-6" />
+              </Button>
+
+              <Button
+              size="icon"              onClick={endCall}
               className="rounded-full w-16 h-16 bg-red-500 hover:bg-red-600">
 
                 <PhoneOff className="w-6 h-6" />

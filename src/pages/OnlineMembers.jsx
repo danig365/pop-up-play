@@ -5,6 +5,7 @@ import { motion } from 'framer-motion';
 import { ArrowLeft, Video, MessageCircle, Loader2, MapPin, Users, Filter } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { createPageUrl } from '@/utils';
 import BlockButton from '@/components/blocking/BlockButton';
@@ -56,6 +57,16 @@ const stateMapping = {
   'virginia': 'VA', 'washington': 'WA', 'west virginia': 'WV', 'wisconsin': 'WI', 'wyoming': 'WY'
 };
 
+const GENDER_OPTIONS = [
+  { value: 'all', label: 'All genders' },
+  { value: 'male', label: 'Male' },
+  { value: 'female', label: 'Female' },
+  { value: 'couple', label: 'Couple' },
+  { value: 'transgender', label: 'Transgender' },
+  { value: 'non-binary', label: 'Non-binary' },
+  { value: 'prefer-not-to-say', label: 'Prefer not to say' }
+];
+
 export default function OnlineMembers() {
   const INITIAL_VISIBLE = 6;
   const LOAD_MORE_STEP = 6;
@@ -65,6 +76,7 @@ export default function OnlineMembers() {
   const [screenNameFilter, setScreenNameFilter] = useState('');
   const [interestFilter, setInterestFilter] = useState('');
   const [locationFilter, setLocationFilter] = useState('');
+  const [genderFilter, setGenderFilter] = useState('all');
   const [backUrl, setBackUrl] = useState('Menu');
   const [liveLocationsByProfileId, setLiveLocationsByProfileId] = useState({});
   const [distanceByProfileId, setDistanceByProfileId] = useState({});
@@ -89,10 +101,22 @@ export default function OnlineMembers() {
   useEffect(() => {
     isMountedRef.current = true;
     
-    // Reset filters when component mounts or route changes
-    setScreenNameFilter('');
-    setInterestFilter('');
-    setLocationFilter('');
+    // Restore filters from sessionStorage when returning from a profile, otherwise reset
+    const savedScreenName = sessionStorage.getItem('onlineMembers_screenNameFilter');
+    const savedInterest = sessionStorage.getItem('onlineMembers_interestFilter');
+    const savedLocation = sessionStorage.getItem('onlineMembers_locationFilter');
+    const savedGender = sessionStorage.getItem('onlineMembers_genderFilter');
+    if (savedScreenName || savedInterest || savedLocation || savedGender) {
+      if (savedScreenName) setScreenNameFilter(savedScreenName);
+      if (savedInterest) setInterestFilter(savedInterest);
+      if (savedLocation) setLocationFilter(savedLocation);
+      if (savedGender) setGenderFilter(savedGender);
+    } else {
+      setScreenNameFilter('');
+      setInterestFilter('');
+      setLocationFilter('');
+      setGenderFilter('all');
+    }
     setLiveLocationsByProfileId({});
     // Restore scroll from sessionStorage when returning from a profile, otherwise reset
     const savedScroll = sessionStorage.getItem('onlineMembers_scrollY');
@@ -100,6 +124,10 @@ export default function OnlineMembers() {
     if (savedScroll !== null) {
       sessionStorage.removeItem('onlineMembers_scrollY');
       sessionStorage.removeItem('onlineMembers_visibleCount');
+      sessionStorage.removeItem('onlineMembers_screenNameFilter');
+      sessionStorage.removeItem('onlineMembers_interestFilter');
+      sessionStorage.removeItem('onlineMembers_locationFilter');
+      sessionStorage.removeItem('onlineMembers_genderFilter');
       const count = Math.max(INITIAL_VISIBLE, parseInt(savedCount || String(INITIAL_VISIBLE), 10));
       pendingRestoreCountRef.current = count;
       setVisibleCount(count);
@@ -278,6 +306,10 @@ export default function OnlineMembers() {
       );
     }
 
+    if (genderFilter !== 'all') {
+      profiles = profiles.filter(p => String(p.gender || '').toLowerCase() === genderFilter);
+    }
+
     // Filter by location
     if (locationFilter.trim()) {
       profiles = profiles.filter(p => {
@@ -311,7 +343,7 @@ export default function OnlineMembers() {
     });
     
     return profiles;
-  }, [activeProfiles, distanceByProfileId, blockedUsers, screenNameFilter, interestFilter, locationFilter, liveLocationsByProfileId, originalOrderMap]);
+  }, [activeProfiles, distanceByProfileId, blockedUsers, screenNameFilter, interestFilter, locationFilter, genderFilter, liveLocationsByProfileId, originalOrderMap]);
 
   // Reset visible count when filters or data change
   useEffect(() => {
@@ -319,7 +351,7 @@ export default function OnlineMembers() {
       return;
     }
     setVisibleCount(INITIAL_VISIBLE);
-  }, [screenNameFilter, interestFilter, locationFilter, activeProfiles.length]);
+  }, [screenNameFilter, interestFilter, locationFilter, genderFilter, activeProfiles.length]);
 
   useEffect(() => {
     if (isLoading || userLoading) return;
@@ -474,6 +506,48 @@ export default function OnlineMembers() {
               )}
             </div>
           </div>
+
+          <div className="hidden md:block bg-white rounded-2xl shadow-sm p-4">
+            <div className="flex items-center gap-3">
+              <Filter className="w-5 h-5 text-purple-600" />
+              <Select value={genderFilter} onValueChange={setGenderFilter}>
+                <SelectTrigger className="flex-1 h-9 rounded-xl border-purple-300 focus:border-purple-500 text-base md:text-sm bg-white">
+                  <SelectValue placeholder="All genders" />
+                </SelectTrigger>
+                <SelectContent>
+                  {GENDER_OPTIONS.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          <div className="md:hidden bg-white rounded-2xl shadow-sm p-4">
+            <div className="flex items-center gap-3">
+              <Filter className="w-5 h-5 text-purple-600" />
+              <div className="flex-1 overflow-x-auto">
+                <div className="flex items-center gap-2 min-w-max py-0.5">
+                  {GENDER_OPTIONS.map((option) => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      onClick={() => setGenderFilter(option.value)}
+                      className={`px-3 py-1 rounded-full text-xs font-semibold border transition-colors ${
+                        genderFilter === option.value
+                          ? 'bg-violet-600 text-white border-violet-600'
+                          : 'bg-white text-slate-600 border-slate-200'
+                      }`}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
         </motion.div>
 
         {/* Stats */}
@@ -525,6 +599,10 @@ export default function OnlineMembers() {
                       if (!guardAction('view full profiles')) return;
                       sessionStorage.setItem('onlineMembers_scrollY', String(Math.round(window.scrollY || 0)));
                       sessionStorage.setItem('onlineMembers_visibleCount', String(visibleCount));
+                      sessionStorage.setItem('onlineMembers_screenNameFilter', screenNameFilter);
+                      sessionStorage.setItem('onlineMembers_interestFilter', interestFilter);
+                      sessionStorage.setItem('onlineMembers_locationFilter', locationFilter);
+                      sessionStorage.setItem('onlineMembers_genderFilter', genderFilter);
                       navigate(
                         createPageUrl('Profile') +
                         '?user=' + encodeURIComponent(profile.user_email) +
@@ -554,6 +632,10 @@ export default function OnlineMembers() {
                         if (!guardAction('view full profiles')) return;
                         sessionStorage.setItem('onlineMembers_scrollY', String(Math.round(window.scrollY || 0)));
                         sessionStorage.setItem('onlineMembers_visibleCount', String(visibleCount));
+                        sessionStorage.setItem('onlineMembers_screenNameFilter', screenNameFilter);
+                        sessionStorage.setItem('onlineMembers_interestFilter', interestFilter);
+                        sessionStorage.setItem('onlineMembers_locationFilter', locationFilter);
+                        sessionStorage.setItem('onlineMembers_genderFilter', genderFilter);
                         navigate(
                           createPageUrl('Profile') +
                           '?user=' + encodeURIComponent(profile.user_email) +

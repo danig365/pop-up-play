@@ -59,6 +59,7 @@ export default function EnterAccessCode() {
       return result;
     },
     onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['accessCodes'] });
       queryClient.invalidateQueries({ queryKey: ['userSubscription'] });
       queryClient.invalidateQueries({ queryKey: ['subscriptionStatus'] });
       toast.success('Access code redeemed successfully!');

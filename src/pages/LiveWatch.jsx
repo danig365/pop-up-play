@@ -29,6 +29,7 @@ export default function LiveWatch() {
   const audioRef = useRef(null);
   const videoTrackRef = useRef(null);
   const audioTrackRef = useRef(null);
+  const audioMutedRef = useRef(false);
 
   const [connectionState, setConnectionState] = useState('disconnected');
   const [playbackError, setPlaybackError] = useState('');
@@ -129,9 +130,9 @@ export default function LiveWatch() {
       audioTrackRef.current = track;
       audioRef.current.autoplay = true;
       audioRef.current.controls = false;
-      audioRef.current.muted = audioMuted;
+      audioRef.current.muted = audioMutedRef.current;
     }
-  }, [audioMuted]);
+  }, []);
 
   const syncExistingTracks = useCallback((room) => {
     if (!room) return;
@@ -165,6 +166,46 @@ export default function LiveWatch() {
       }
     }
   }, [detachTracks]);
+
+  useEffect(() => {
+    audioMutedRef.current = audioMuted;
+    const audio = audioRef.current;
+    if (audio) {
+      audio.muted = audioMuted;
+    }
+  }, [audioMuted]);
+
+  const toggleAudio = useCallback(async () => {
+    // Toggle mute state locally first to avoid causing connection-side effects.
+    const willEnable = audioMuted || needsAudioUnlock;
+
+    if (willEnable) {
+      // optimistic local unmute
+      audioMutedRef.current = false;
+      setAudioMuted(false);
+      const audio = audioRef.current;
+      if (audio) {
+        audio.muted = false;
+        try {
+          // Ensure playback is allowed; if remote audio hasn't started, startAudio is a best-effort.
+          if (audio.paused) {
+            await roomRef.current?.startAudio();
+          }
+        } catch {
+          // If starting audio fails due to autoplay restrictions, ask user to interact
+          setNeedsAudioUnlock(true);
+        }
+      }
+      setNeedsAudioUnlock(false);
+      return;
+    }
+
+    // mute locally only
+    audioMutedRef.current = true;
+    setAudioMuted(true);
+    const audio = audioRef.current;
+    if (audio) audio.muted = true;
+  }, [audioMuted, needsAudioUnlock]);
 
   useEffect(() => {
     if (!eventId || !user?.email || !watchSession?.livekit_token || !sessionId || joinSentRef.current) return;
@@ -331,7 +372,7 @@ export default function LiveWatch() {
           <Radio className="w-10 h-10 text-fuchsia-400 mx-auto mb-4" />
           <h2 className="text-xl font-bold text-slate-800 mb-2">Login Required</h2>
           <p className="text-slate-500 mb-6">Please sign in to watch this live stream.</p>
-          <Button className="rounded-xl" onClick={() => base44.auth.redirectToLogin()}>
+          <Button className="rounded-xl" onClick={() => base44.auth.redirectToLogin(window.location.href)}>
             Login
           </Button>
         </div>
@@ -376,10 +417,10 @@ export default function LiveWatch() {
               </div>
             </div>
 
-            <div className="relative w-full bg-black" style={{ paddingBottom: '56.25%' }}>
+            <div className="relative w-full bg-black h-[62vh] sm:h-auto sm:aspect-video">
               <video
                 ref={videoRef}
-                className="absolute inset-0 h-full w-full object-contain bg-black"
+                className="absolute inset-0 h-full w-full object-cover bg-black"
                 autoPlay
                 playsInline
               />
@@ -400,37 +441,22 @@ export default function LiveWatch() {
                 {needsAudioUnlock ? 'Tap the button below to enable audio playback in this browser.' : 'Audio and video will stay connected while you remain on this page.'}
               </p>
               <div className="flex flex-wrap gap-2">
-                {needsAudioUnlock && (
-                  <Button
-                    type="button"
-                    className="rounded-xl bg-fuchsia-600 hover:bg-fuchsia-700 text-white"
-                    onClick={async () => {
-                      try {
-                        await roomRef.current?.startAudio();
-                        setNeedsAudioUnlock(false);
-                      } catch {
-                        setNeedsAudioUnlock(true);
-                      }
-                    }}
-                  >
-                    <Volume2 className="w-4 h-4 mr-2" />
-                    Enable Audio
-                  </Button>
-                )}
                 <Button
                   type="button"
-                  variant="outline"
-                  className="rounded-xl"
-                  onClick={() => {
-                    const audio = audioRef.current;
-                    if (!audio) return;
-                    const nextMuted = !audioMuted;
-                    audio.muted = nextMuted;
-                    setAudioMuted(nextMuted);
-                  }}
+                  className={`rounded-xl ${audioMuted || needsAudioUnlock ? 'bg-white text-violet-700 border border-violet-200 hover:bg-violet-50' : 'bg-violet-600 text-white hover:bg-violet-700'}`}
+                  onClick={toggleAudio}
                 >
-                  {audioMuted ? <Volume2 className="w-4 h-4 mr-2" /> : <VolumeX className="w-4 h-4 mr-2" />}
-                  {audioMuted ? 'Unmute Audio' : 'Mute Audio'}
+                  {audioMuted || needsAudioUnlock ? (
+                    <>
+                      <VolumeX className="w-4 h-4 mr-2" />
+                      Muted Audio
+                    </>
+                  ) : (
+                    <>
+                      <Volume2 className="w-4 h-4 mr-2" />
+                      Enabled Audio
+                    </>
+                  )}
                 </Button>
               </div>
             </div>
@@ -458,7 +484,7 @@ export default function LiveWatch() {
               <p className="text-sm text-slate-500 mt-1">Status: {watchSession.status}</p>
             </div>
 
-            <div className="relative w-full" style={{ paddingBottom: '56.25%' }}>
+            <div className="relative w-full h-[62vh] sm:h-auto sm:aspect-video">
               <iframe
                 title={`Live stream - ${watchSession.title || 'Live Event'}`}
                 src={watchSession.embed_url}

@@ -550,6 +550,15 @@ class APIAuth {
 
   redirectToLogin(redirectUrl = null) {
     if (typeof window !== 'undefined') {
+      try {
+        if (redirectUrl) {
+          const encoded = encodeURIComponent(String(redirectUrl));
+          window.location.href = `/?returnTo=${encoded}`;
+          return;
+        }
+      } catch (e) {
+        // fallback to root
+      }
       window.location.href = '/';
     }
   }

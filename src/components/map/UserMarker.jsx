@@ -44,11 +44,12 @@ export default function UserMarker({ profile, isCurrentUser, onProfileClick, unr
     });
   };
 
-  if (!profile.latitude || !profile.longitude) return null;
+  // Use offset coordinates for display, or fall back to actual coordinates.
+  // Normalize to numbers to avoid Leaflet Invalid LatLng crashes.
+  const displayLat = Number(profile.displayLatitude ?? profile.latitude);
+  const displayLon = Number(profile.displayLongitude ?? profile.longitude);
 
-  // Use offset coordinates for display, or fall back to actual coordinates
-  const displayLat = profile.displayLatitude || profile.latitude;
-  const displayLon = profile.displayLongitude || profile.longitude;
+  if (!Number.isFinite(displayLat) || !Number.isFinite(displayLon)) return null;
 
   return (
     <Marker
