@@ -246,7 +246,7 @@ export default function AllProfiles() {
   const { data: allProfiles = [], isLoading } = useQuery({
     queryKey: ['allProfiles'],
     queryFn: async () => {
-      const profiles = await base44.entities.UserProfile.list('', 500);
+      const profiles = await base44.entities.UserProfile.list('', 10000);
       return profiles;
     },
     enabled: !!user?.email
