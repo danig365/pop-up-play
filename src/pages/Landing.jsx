@@ -120,6 +120,13 @@ export default function Landing() {
             <p className="mt-6 text-white text-xl lg:text-2xl font-medium leading-relaxed text-center">
               Connect and play with couples, singles, and alternative lifestyle lovers—right now, not tomorrow, not next week but right now.
             </p>
+
+            {/* Privacy Policy Link */}
+            <div className="mt-4 text-center">
+              <Link to="/PrivacyPolicy" className="text-white/70 text-sm underline hover:text-white transition">
+                Privacy Policy
+              </Link>
+            </div>
           </motion.div>
         </div>
       </div>

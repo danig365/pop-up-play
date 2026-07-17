@@ -13,6 +13,29 @@ import { createPageUrl } from '@/utils';
 
 const API_BASE_URL = getApiBaseUrl();
 
+const BANNER_STYLES = {
+  blue: 'bg-blue-50 border-blue-200 text-blue-900',
+  violet: 'bg-violet-50 border-violet-200 text-violet-900',
+  green: 'bg-green-50 border-green-200 text-green-900',
+  amber: 'bg-amber-50 border-amber-200 text-amber-900',
+};
+
+function StatusBanner({ color = 'blue', icon: Icon, title, subtitle }) {
+  return (
+    <motion.div
+      className={`mb-8 p-4 border rounded-2xl text-center ${BANNER_STYLES[color] || BANNER_STYLES.blue}`}
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+    >
+      <div className="flex items-center justify-center gap-2">
+        {Icon && <Icon className="w-5 h-5 flex-shrink-0" />}
+        <p className="font-semibold">{title}</p>
+      </div>
+      {subtitle && <p className="text-sm mt-1 opacity-80">{subtitle}</p>}
+    </motion.div>
+  );
+}
+
 export default function Pricing() {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -160,9 +183,24 @@ export default function Pricing() {
     );
   }
 
-  const trialDaysRemaining = subscription?.trial_end 
-    ? Math.max(0, Math.ceil((new Date(subscription.trial_end) - new Date()) / (1000 * 60 * 60 * 24)))
-    : null;
+  // Trials, access codes, and one-time payments all store their expiry in end_date.
+  const daysUntil = (d) =>
+    d ? Math.max(0, Math.ceil((new Date(d) - new Date()) / (1000 * 60 * 60 * 24))) : null;
+
+  const subStatus = subscription?.status;
+  const hasRecurringPaypal = !!subscription?.paypal_subscription_id;
+  const hasPaypalOrder = !!subscription?.paypal_order_id;
+
+  const isTrial = subStatus === 'trial';
+  const isRecurring = subStatus === 'active' && hasRecurringPaypal;
+  const isOneTime = subStatus === 'active' && hasPaypalOrder && !hasRecurringPaypal;
+  // Access code = active with no PayPal linkage at all
+  const isAccessCode = subStatus === 'active' && !hasRecurringPaypal && !hasPaypalOrder;
+
+  const subEndDate = subscription?.current_period_end || subscription?.end_date || null;
+  const daysRemaining = daysUntil(subEndDate);
+  const trialDaysRemaining = isTrial ? daysUntil(subscription?.end_date) : null;
+  const formatDate = (d) => (d ? new Date(d).toLocaleDateString() : '');
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-violet-50 via-white to-rose-50">
@@ -196,19 +234,74 @@ export default function Pricing() {
           </p>
         </motion.div>
 
-        {subscription?.status === 'trial' && trialDaysRemaining > 0 && (
-          <motion.div
-            className="mb-8 p-4 bg-blue-50 border border-blue-200 rounded-2xl text-center"
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-          >
-            <div className="flex items-center justify-center gap-2 text-blue-900">
-              <Clock className="w-5 h-5" />
-              <p className="font-semibold">
-                {trialDaysRemaining} days left in your free trial
-              </p>
-            </div>
-          </motion.div>
+        {/* Trial */}
+        {isTrial && (
+          <StatusBanner
+            color="blue"
+            icon={Clock}
+            title={
+              trialDaysRemaining > 0
+                ? `${trialDaysRemaining} ${trialDaysRemaining === 1 ? 'day' : 'days'} left in your free trial`
+                : 'Your free trial has ended'
+            }
+            subtitle={subEndDate ? `Trial ends on ${formatDate(subscription.end_date)}` : ''}
+          />
+        )}
+
+        {/* Access code */}
+        {isAccessCode && (
+          <StatusBanner
+            color="violet"
+            icon={Key}
+            title={
+              daysRemaining > 0
+                ? `Access code active — ${daysRemaining} ${daysRemaining === 1 ? 'day' : 'days'} left`
+                : 'Your access code has expired'
+            }
+            subtitle={
+              subEndDate
+                ? `Expires on ${formatDate(subEndDate)} · does not auto-renew — subscribe to keep access`
+                : ''
+            }
+          />
+        )}
+
+        {/* Recurring paid membership */}
+        {isRecurring && (
+          <StatusBanner
+            color="green"
+            icon={Crown}
+            title="Recurring membership active"
+            subtitle={subEndDate ? `Auto-renews on ${formatDate(subEndDate)}` : ''}
+          />
+        )}
+
+        {/* One-time PayPal payment */}
+        {isOneTime && (
+          <StatusBanner
+            color="green"
+            icon={Check}
+            title={
+              daysRemaining > 0
+                ? `Membership active — ${daysRemaining} ${daysRemaining === 1 ? 'day' : 'days'} left`
+                : 'Your membership has ended'
+            }
+            subtitle={
+              subEndDate
+                ? `Expires on ${formatDate(subEndDate)} · one-time payment, does not auto-renew`
+                : ''
+            }
+          />
+        )}
+
+        {/* Expired / inactive */}
+        {(subStatus === 'expired' || subStatus === 'cancelled') && (
+          <StatusBanner
+            color="amber"
+            icon={AlertTriangle}
+            title={subStatus === 'cancelled' ? 'Your membership was cancelled' : 'Your access has expired'}
+            subtitle="Subscribe or enter an access code to regain access"
+          />
         )}
 
         <motion.div
@@ -256,7 +349,7 @@ export default function Pricing() {
                 </li>
               </ul>
 
-              {subscription?.status === 'active' ? (
+              {isRecurring ? (
                 <div className="space-y-4">
                   <div className="text-center">
                     <div className="inline-flex items-center gap-2 px-4 py-2 bg-green-100 text-green-800 rounded-full font-semibold">

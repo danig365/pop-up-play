@@ -579,6 +579,7 @@ export default function Profile() {
                   src={formData.avatar_url || DEFAULT_AVATAR_TEMPLATE}
                   alt="Profile"
                   className="w-full h-full object-cover"
+                  onError={(e) => { e.currentTarget.onerror = null; e.currentTarget.src = DEFAULT_AVATAR_TEMPLATE; }}
                   onContextMenu={(e) => e.preventDefault()}
                   draggable={false}
                   style={{ pointerEvents: 'none', userSelect: 'none' }}

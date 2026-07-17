@@ -10,6 +10,7 @@ import { base44 } from '@/api/base44Client';
 import { isRequiredProfileComplete } from '@/lib/profileCompletion';
 import { createPageUrl } from '@/utils';
 import { useLocation, useNavigate } from 'react-router-dom';
+import { getApiBaseUrl } from '@/lib/apiUrl';
 
 function FullPageLoader() {
   return (
@@ -108,6 +109,23 @@ export default function Layout({ children, currentPageName }) {
     location.search,
     navigate,
   ]);
+
+  // Heartbeat: update last_active every 30 seconds while the user is in the app
+  useEffect(() => {
+    if (!userEmail) return;
+    const ping = () => {
+      fetch(`${getApiBaseUrl()}/user/heartbeat`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${localStorage.getItem('popup_auth_token')}`,
+          'x-user-email': userEmail,
+        },
+      }).catch(() => {});
+    };
+    ping();
+    const interval = setInterval(ping, 30000);
+    return () => clearInterval(interval);
+  }, [userEmail]);
 
   // 3-tier access control:
   // 'open'   = no subscription check at all (Tier 1)

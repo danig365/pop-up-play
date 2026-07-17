@@ -31,6 +31,7 @@ export default function AvatarUpload({ currentAvatar, onAvatarChange }) {
           src={currentAvatar || DEFAULT_AVATAR_TEMPLATE}
           alt="Profile"
           className="w-full h-full object-cover"
+          onError={(e) => { e.currentTarget.onerror = null; e.currentTarget.src = DEFAULT_AVATAR_TEMPLATE; }}
         />
       </div>
       

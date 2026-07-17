@@ -700,6 +700,7 @@ export default function AllProfiles() {
                         src={profile.avatar_url || DEFAULT_AVATAR_TEMPLATE}
                         alt={profile.display_name}
                         className="w-full h-full object-cover"
+                        onError={(e) => { e.currentTarget.onerror = null; e.currentTarget.src = DEFAULT_AVATAR_TEMPLATE; }}
                       />
                       {profile.is_popped_up && (
                         <div className="absolute top-1 right-1 w-2 h-2 bg-green-500 rounded-full border border-white shadow"></div>

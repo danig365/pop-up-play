@@ -46,7 +46,7 @@ export default function Home() {
   const [locationError, setLocationError] = useState('');
   const [adIndex, setAdIndex] = useState(0);
   const [openAd, setOpenAd] = useState(null);
-  const [genderFilter, setGenderFilter] = useState('all');
+  const [genderFilter, setGenderFilter] = useState('female');
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const { guardAction } = useSubscription();
@@ -370,6 +370,7 @@ export default function Home() {
                 <img
                   src={myProfile?.avatar_url || `data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect fill='%23ddd6fe' width='100' height='100'/%3E%3Ccircle cx='50' cy='38' r='18' fill='%23a78bfa'/%3E%3Cellipse cx='50' cy='80' rx='28' ry='22' fill='%23a78bfa'/%3E%3C/svg%3E`}
                   alt="Profile"
+                  onError={(e) => { e.currentTarget.onerror = null; e.currentTarget.src = `data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect fill='%23ddd6fe' width='100' height='100'/%3E%3Ccircle cx='50' cy='38' r='18' fill='%23a78bfa'/%3E%3Cellipse cx='50' cy='80' rx='28' ry='22' fill='%23a78bfa'/%3E%3C/svg%3E`; }}
                   className="w-full h-full object-cover" />
 
               </div>

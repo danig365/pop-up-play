@@ -15,7 +15,9 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 
-export default function ChatConversation({ 
+const DEFAULT_AVATAR_FALLBACK = `data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect fill='%23ddd6fe' width='100' height='100'/%3E%3Ccircle cx='50' cy='38' r='18' fill='%23a78bfa'/%3E%3Cellipse cx='50' cy='80' rx='28' ry='22' fill='%23a78bfa'/%3E%3C/svg%3E`;
+
+export default function ChatConversation({
   otherUserEmail,
   otherProfile, 
   messages, 
@@ -110,23 +112,36 @@ export default function ChatConversation({
           className="flex min-w-0 items-center gap-3 flex-1"
         >
           <img
-            src={otherProfile.avatar_url || `data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect fill='%23ddd6fe' width='100' height='100'/%3E%3Ccircle cx='50' cy='38' r='18' fill='%23a78bfa'/%3E%3Cellipse cx='50' cy='80' rx='28' ry='22' fill='%23a78bfa'/%3E%3C/svg%3E`}
+            src={otherProfile.avatar_url || DEFAULT_AVATAR_FALLBACK}
             alt={otherProfile.display_name}
             className="w-12 h-12 flex-shrink-0 rounded-full object-cover border-2 border-violet-100 cursor-pointer hover:border-violet-300 transition-colors"
+            onError={(e) => { e.currentTarget.onerror = null; e.currentTarget.src = DEFAULT_AVATAR_FALLBACK; }}
           />
 
           <div className="flex-1 min-w-0">
             <h2 className="truncate font-semibold text-slate-800 hover:text-violet-600 cursor-pointer transition-colors">
               {otherProfile.display_name}
             </h2>
-            {otherProfile.is_popped_up ? (
-              <div className="flex items-center gap-1 text-xs text-green-600">
-                <div className="w-2 h-2 rounded-full bg-green-500"></div>
-                Active now
-              </div>
-            ) : (
-              <p className="text-xs text-slate-500">Offline</p>
-            )}
+            {(() => {
+              const lastActive = otherProfile.last_active ? new Date(otherProfile.last_active) : null;
+              const minutesAgo = lastActive ? (Date.now() - lastActive.getTime()) / 60000 : Infinity;
+              if (minutesAgo <= 2) {
+                return (
+                  <div className="flex items-center gap-1 text-xs text-green-600">
+                    <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
+                    Online
+                  </div>
+                );
+              } else if (minutesAgo <= 60) {
+                return <p className="text-xs text-slate-500">Active {Math.floor(minutesAgo)}m ago</p>;
+              } else if (minutesAgo <= 1440) {
+                return <p className="text-xs text-slate-500">Active {Math.floor(minutesAgo / 60)}h ago</p>;
+              } else if (lastActive) {
+                return <p className="text-xs text-slate-500">Active {Math.floor(minutesAgo / 1440)}d ago</p>;
+              } else {
+                return <p className="text-xs text-slate-500">Offline</p>;
+              }
+            })()}
           </div>
         </Link>
 
@@ -176,9 +191,10 @@ export default function ChatConversation({
                         {!isOwn && showAvatar && (
                           <Link to={createPageUrl('Profile') + `?user=${otherUserEmail}&back=Chat&chatWith=${otherUserEmail}`}>
                             <img
-                              src={otherProfile.avatar_url || `data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect fill='%23ddd6fe' width='100' height='100'/%3E%3Ccircle cx='50' cy='38' r='18' fill='%23a78bfa'/%3E%3Cellipse cx='50' cy='80' rx='28' ry='22' fill='%23a78bfa'/%3E%3C/svg%3E`}
+                              src={otherProfile.avatar_url || DEFAULT_AVATAR_FALLBACK}
                               alt={otherProfile.display_name}
                               className="w-8 h-8 rounded-full object-cover flex-shrink-0 cursor-pointer hover:ring-2 hover:ring-violet-300 transition-all"
+                              onError={(e) => { e.currentTarget.onerror = null; e.currentTarget.src = DEFAULT_AVATAR_FALLBACK; }}
                             />
                           </Link>
                         )}
@@ -249,8 +265,13 @@ export default function ChatConversation({
                               <p className="text-sm whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{message.content}</p>
                             </div>
                             
-                            <span className="text-xs text-slate-400 mt-1 px-2">
+                            <span className="flex items-center gap-1 text-xs text-slate-400 mt-1 px-2">
                               {format(new Date(message.created_date), 'h:mm a')}
+                              {isOwn && (
+                                message.read
+                                  ? <span className="text-violet-500 font-medium">✓✓ Read</span>
+                                  : <span className="text-slate-400">✓ Sent</span>
+                              )}
                             </span>
                           </div>
 

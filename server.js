@@ -1315,6 +1315,31 @@ async function runMigrations() {
       await pool.query(`ALTER TABLE "Event" ADD COLUMN IF NOT EXISTS tagged_users JSONB DEFAULT '[]'`);
     } catch (e) { /* already exists */ }
 
+    // Add last_active column to UserProfile for real-time online status tracking
+    try {
+      await pool.query(`ALTER TABLE "UserProfile" ADD COLUMN IF NOT EXISTS last_active TIMESTAMP`);
+      await pool.query(`CREATE INDEX IF NOT EXISTS idx_userprofile_last_active ON "UserProfile"(last_active)`);
+    } catch (e) { console.warn('⚠️ last_active migration note:', e.message); }
+
+    // Heal access-code subscriptions that have no end_date (they would never expire).
+    // Set end_date to 1 month after start_date (or 1 month from now if start_date is missing).
+    try {
+      const healed = await pool.query(`
+        UPDATE "UserSubscription"
+        SET end_date = COALESCE(start_date, CURRENT_TIMESTAMP) + INTERVAL '1 month',
+            updated_date = CURRENT_TIMESTAMP
+        WHERE status = 'active'
+          AND end_date IS NULL
+          AND paypal_subscription_id IS NULL
+          AND paypal_order_id IS NULL
+      `);
+      if (healed.rowCount > 0) {
+        console.log(`✅ [Migration] Healed ${healed.rowCount} access-code subscription(s) with missing end_date`);
+      }
+    } catch (e) {
+      console.warn('⚠️ Access-code subscription heal migration note:', e.message);
+    }
+
   } catch (error) {
     console.error('❌ Migration error:', error.message);
   }
@@ -2538,6 +2563,12 @@ app.post('/api/access-code/redeem', authenticateUser, async (req, res) => {
     );
     console.log(`🔑 [RedeemCode] Code marked as used: ${normalizedCode}`);
 
+    // Subscription always lasts exactly 1 month from the moment of redemption,
+    // regardless of the access code's own valid_until (which only gates redemption).
+    const redemptionDate = new Date();
+    const subscriptionEnd = new Date(redemptionDate);
+    subscriptionEnd.setMonth(subscriptionEnd.getMonth() + 1);
+
     // Check if user already has a subscription
     const existingSubResult = await pool.query(
       'SELECT * FROM "UserSubscription" WHERE user_email = $1',
@@ -2559,22 +2590,22 @@ app.post('/api/access-code/redeem', authenticateUser, async (req, res) => {
              paypal_order_id = NULL,
              updated_date = CURRENT_TIMESTAMP
          WHERE id = $4`,
-        ['active', new Date().toISOString(), accessCode.valid_until, subId]
+        ['active', redemptionDate.toISOString(), subscriptionEnd.toISOString(), subId]
       );
-      console.log(`🔑 [RedeemCode] Updated existing subscription for: ${userEmail} (cleared PayPal IDs)`);
+      console.log(`🔑 [RedeemCode] Updated existing subscription for: ${userEmail}, expires: ${subscriptionEnd.toISOString()} (cleared PayPal IDs)`);
     } else {
       // Create new subscription
       await pool.query(
         'INSERT INTO "UserSubscription" (user_email, status, start_date, end_date) VALUES ($1, $2, $3, $4)',
-        [userEmail, 'active', new Date().toISOString(), accessCode.valid_until]
+        [userEmail, 'active', redemptionDate.toISOString(), subscriptionEnd.toISOString()]
       );
-      console.log(`🔑 [RedeemCode] Created new subscription for: ${userEmail}`);
+      console.log(`🔑 [RedeemCode] Created new subscription for: ${userEmail}, expires: ${subscriptionEnd.toISOString()}`);
     }
 
-    res.json({ 
-      success: true, 
+    res.json({
+      success: true,
       message: 'Access code redeemed successfully',
-      valid_until: accessCode.valid_until
+      valid_until: subscriptionEnd.toISOString()
     });
   } catch (error) {
     console.error('❌ [RedeemCode] Error:', error.message);
@@ -2583,6 +2614,20 @@ app.post('/api/access-code/redeem', authenticateUser, async (req, res) => {
 });
 
 // ============ User Routes ============
+
+// Heartbeat: keeps last_active timestamp current so chat can show real online status
+app.post('/api/user/heartbeat', authenticateUser, async (req, res) => {
+  try {
+    const userEmail = String(req.authenticatedUser.email || '').trim().toLowerCase();
+    await pool.query(
+      `UPDATE "UserProfile" SET last_active = CURRENT_TIMESTAMP WHERE user_email = $1`,
+      [userEmail]
+    );
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
 
 app.get('/api/users', async (req, res) => {
   try {
