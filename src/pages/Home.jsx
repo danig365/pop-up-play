@@ -21,6 +21,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { useNavigate } from 'react-router-dom';
 import ScrollControl from '@/components/map/ScrollControl';
 import NavigationMenu from '@/components/navigation/NavigationMenu';
+import NotificationBell from '@/components/notifications/NotificationBell';
 import { useSubscription } from '@/lib/SubscriptionContext';
 import { isLocationEnabled, requestCurrentLocation, setLocationEnabled } from '@/lib/locationPermission';
 import { isRequiredProfileComplete } from '@/lib/profileCompletion';
@@ -343,6 +344,7 @@ export default function Home() {
 
           <div className="flex items-center gap-2">
             <NavigationMenu unreadCount={unreadCount} />
+            <NotificationBell userEmail={user?.email} />
             {user?.role !== 'admin' && (
               <Link to={createPageUrl('LiveEvents')} className="inline-flex flex-col items-center gap-0.5">
                 <Button

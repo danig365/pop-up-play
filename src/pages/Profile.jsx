@@ -29,6 +29,16 @@ import { toast } from 'sonner';
 import { AlertDialog, AlertDialogAction, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import BlockButton from '@/components/blocking/BlockButton';
 
+const API_BASE_URL = getApiBaseUrl();
+
+function getAuthHeaders(extra = {}) {
+  const token = localStorage.getItem('popup_auth_token');
+  return {
+    ...extra,
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+}
+
 export default function Profile() {
   const [user, setUser] = useState(null);
   const [viewingUserEmail, setViewingUserEmail] = useState(null);
@@ -63,6 +73,7 @@ export default function Profile() {
   const navigate = useNavigate();
   const location = useLocation();
   const zipLookupRequestRef = useRef(0);
+  const pingedEmailRef = useRef(null);
 
   const [backUrl, setBackUrl] = useState('Home');
 
@@ -255,6 +266,17 @@ export default function Profile() {
       }));
     }
   }, [displayProfile, user, isOwnProfile]);
+
+  useEffect(() => {
+    if (!viewingUserEmail || !user?.email) return;
+    if (viewingUserEmail === user.email) return; // never ping on own profile
+    if (pingedEmailRef.current === viewingUserEmail) return; // already pinged this visit
+    pingedEmailRef.current = viewingUserEmail;
+    fetch(`${API_BASE_URL}/profile/${encodeURIComponent(viewingUserEmail)}/view`, {
+      method: 'POST',
+      headers: getAuthHeaders(),
+    }).catch(() => {}); // best-effort, never surface to the viewer
+  }, [viewingUserEmail, user?.email]);
 
   const saveMutation = useMutation({
     mutationFn: async (formData) => {

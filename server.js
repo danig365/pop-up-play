@@ -414,6 +414,32 @@ async function ensureUserProfileExists(userEmail, displayName = '', avatarUrl = 
   return createdProfile.rows[0] || null;
 }
 
+async function createNotification({ recipientEmail, actorEmail = null, type, title, message = null, linkUrl = null }) {
+  const result = await pool.query(
+    `INSERT INTO "Notification" (recipient_email, actor_email, type, title, message, link_url)
+     VALUES ($1, $2, $3, $4, $5, $6)
+     RETURNING *`,
+    [recipientEmail, actorEmail, type, title, message, linkUrl]
+  );
+  return result.rows[0];
+}
+
+async function createNotificationsBulk(recipients, { actorEmail = null, type, title, message = null, linkUrl = null }) {
+  if (!recipients || recipients.length === 0) return;
+
+  const rows = recipients.map(recipientEmail => [recipientEmail, actorEmail, type, title, message, linkUrl]);
+  const placeholders = rows
+    .map((_, i) => `($${i * 6 + 1}, $${i * 6 + 2}, $${i * 6 + 3}, $${i * 6 + 4}, $${i * 6 + 5}, $${i * 6 + 6})`)
+    .join(',');
+  const values = rows.flat();
+
+  await pool.query(
+    `INSERT INTO "Notification" (recipient_email, actor_email, type, title, message, link_url)
+     VALUES ${placeholders}`,
+    values
+  );
+}
+
 async function getProfileCompletionState(userEmail) {
   const profileResult = await pool.query(
     `SELECT id, user_email, display_name, age, gender, interested_in, zip_code, avatar_url, photos
@@ -1286,6 +1312,42 @@ async function runMigrations() {
       console.warn('⚠️ LiveEventPresence table migration note:', migErr.message);
     }
 
+    // Create Notification table if it doesn't exist
+    try {
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS "Notification" (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          recipient_email VARCHAR(255) NOT NULL REFERENCES "User"(email) ON DELETE CASCADE,
+          actor_email VARCHAR(255) REFERENCES "User"(email) ON DELETE SET NULL,
+          type VARCHAR(50) NOT NULL CHECK (type IN ('reel_posted','new_signup','new_event','profile_view')),
+          title VARCHAR(255) NOT NULL,
+          message TEXT,
+          link_url TEXT,
+          is_read BOOLEAN NOT NULL DEFAULT false,
+          created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+
+      try {
+        await pool.query(`CREATE INDEX IF NOT EXISTS idx_notification_recipient_created ON "Notification"(recipient_email, created_date DESC)`);
+      } catch (e) {
+      }
+
+      try {
+        await pool.query(`CREATE INDEX IF NOT EXISTS idx_notification_recipient_unread ON "Notification"(recipient_email, is_read) WHERE is_read = false`);
+      } catch (e) {
+      }
+
+      try {
+        await pool.query(`CREATE INDEX IF NOT EXISTS idx_notification_type ON "Notification"(type)`);
+      } catch (e) {
+      }
+
+      console.log('✅ Notification table ready');
+    } catch (migErr) {
+      console.warn('⚠️ Notification table migration note:', migErr.message);
+    }
+
     // Verify table structures
     const accessCodeCols = await pool.query(`
       SELECT column_name FROM information_schema.columns 
@@ -1942,6 +2004,17 @@ app.post('/api/auth/signup', async (req, res) => {
       'INSERT INTO "User" (email, name, password_hash, is_email_verified) VALUES ($1, $2, $3, $4) RETURNING *',
       [email, name || email.split('@')[0], passwordHash, false]
     );
+
+    (async () => {
+      const adminsRes = await pool.query(`SELECT email FROM "User" WHERE role = 'admin'`);
+      await createNotificationsBulk(adminsRes.rows.map(r => r.email), {
+        actorEmail: email,
+        type: 'new_signup',
+        title: 'New account created',
+        message: `${email} just signed up`,
+        linkUrl: '/AllProfiles',
+      });
+    })().catch(err => console.error('❌ [Notification:Signup]', err.message));
 
     // Generate OTP and store it
     const otp = generateOTP();
@@ -2898,6 +2971,32 @@ app.post('/api/entities/:table', authenticateUser, async (req, res) => {
     if (table === 'Event' && result.rows[0]) {
       sendEventNotificationEmails(result.rows[0]);
       sendTaggedEventEmails(result.rows[0]);
+
+      const event = result.rows[0];
+      (async () => {
+        const usersRes = await pool.query('SELECT email FROM "User" WHERE email != $1', [event.user_email]);
+        await createNotificationsBulk(usersRes.rows.map(r => r.email), {
+          actorEmail: event.user_email,
+          type: 'new_event',
+          title: 'New Event',
+          message: `New event: ${event.title}`,
+          linkUrl: '/CurrentEvents',
+        });
+      })().catch(err => console.error('❌ [Notification:Event]', err.message));
+    }
+
+    if (table === 'Reel' && result.rows[0]) {
+      const reel = result.rows[0];
+      (async () => {
+        const usersRes = await pool.query('SELECT email FROM "User" WHERE email != $1', [reel.user_email]);
+        await createNotificationsBulk(usersRes.rows.map(r => r.email), {
+          actorEmail: reel.user_email,
+          type: 'reel_posted',
+          title: 'New Reel posted',
+          message: `${reel.user_email.split('@')[0]} posted a new reel`,
+          linkUrl: '/Reels',
+        });
+      })().catch(err => console.error('❌ [Notification:Reel]', err.message));
     }
 
     res.json(result.rows[0]);
@@ -4270,10 +4369,114 @@ app.get('/api/broadcast/recent', authenticateUser, requireAdmin, async (req, res
     res.json(result.rows);
   } catch (error) {
     console.error('❌ [Broadcast] Error fetching broadcasts:', error.message);
-    res.status(500).json({ 
+    res.status(500).json({
       error: error.message,
       details: error.detail
     });
+  }
+});
+
+// ============ Notification Routes ============
+
+// GET /api/notifications - list current user's notifications, paginated
+app.get('/api/notifications', authenticateUser, async (req, res) => {
+  try {
+    const userEmail = req.authenticatedUser.email;
+    const limit = Math.min(parseInt(req.query.limit, 10) || 20, 50);
+    const offset = parseInt(req.query.offset, 10) || 0;
+
+    const result = await pool.query(
+      `SELECT * FROM "Notification" WHERE recipient_email = $1 ORDER BY created_date DESC LIMIT $2 OFFSET $3`,
+      [userEmail, limit, offset]
+    );
+
+    res.json(result.rows);
+  } catch (error) {
+    console.error('❌ [Notifications] Error listing notifications:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/notifications/unread-count
+app.get('/api/notifications/unread-count', authenticateUser, async (req, res) => {
+  try {
+    const userEmail = req.authenticatedUser.email;
+    const result = await pool.query(
+      `SELECT COUNT(*)::int AS count FROM "Notification" WHERE recipient_email = $1 AND is_read = false`,
+      [userEmail]
+    );
+    res.json({ count: result.rows[0].count });
+  } catch (error) {
+    console.error('❌ [Notifications] Error fetching unread count:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/notifications/:id/read
+app.post('/api/notifications/:id/read', authenticateUser, async (req, res) => {
+  try {
+    const userEmail = req.authenticatedUser.email;
+    const result = await pool.query(
+      `UPDATE "Notification" SET is_read = true WHERE id = $1 AND recipient_email = $2 RETURNING *`,
+      [req.params.id, userEmail]
+    );
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'Notification not found' });
+    }
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('❌ [Notifications] Error marking notification read:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/notifications/read-all
+app.post('/api/notifications/read-all', authenticateUser, async (req, res) => {
+  try {
+    const userEmail = req.authenticatedUser.email;
+    const result = await pool.query(
+      `UPDATE "Notification" SET is_read = true WHERE recipient_email = $1 AND is_read = false`,
+      [userEmail]
+    );
+    res.json({ updated: result.rowCount });
+  } catch (error) {
+    console.error('❌ [Notifications] Error marking all notifications read:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/profile/:email/view - ping that someone viewed a profile
+app.post('/api/profile/:email/view', authenticateUser, async (req, res) => {
+  try {
+    const viewedEmail = String(req.params.email || '').trim().toLowerCase();
+    const viewerEmail = req.authenticatedUser.email;
+
+    if (!viewedEmail) {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+
+    if (viewedEmail === viewerEmail) {
+      return res.json({ skipped: true });
+    }
+
+    const userExists = await pool.query('SELECT 1 FROM "User" WHERE email = $1', [viewedEmail]);
+    if (userExists.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    await createNotification({
+      recipientEmail: viewedEmail,
+      actorEmail: viewerEmail,
+      type: 'profile_view',
+      title: 'Someone viewed your profile',
+      message: `${viewerEmail.split('@')[0]} viewed your profile`,
+      linkUrl: `/Profile?user=${encodeURIComponent(viewerEmail)}`,
+    });
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('❌ [Notifications] Error recording profile view:', error.message);
+    res.status(500).json({ error: error.message });
   }
 });
 

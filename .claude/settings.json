@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(docker exec *)",
+      "Bash(awk -F: '$1 > 4290 && $1 < 4360')"
+    ]
+  }
+}
