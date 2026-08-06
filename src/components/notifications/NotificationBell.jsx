@@ -14,6 +14,7 @@ export default function NotificationBell({ userEmail }) {
     setIsPanelOpen,
     markRead,
     markAllRead,
+    deleteAll,
   } = useNotifications(userEmail);
 
   return (
@@ -41,6 +42,7 @@ export default function NotificationBell({ userEmail }) {
           isLoading={isLoading}
           onMarkRead={markRead}
           onMarkAllRead={markAllRead}
+          onDeleteAll={deleteAll}
           onClose={() => setIsPanelOpen(false)}
         />
       </PopoverContent>

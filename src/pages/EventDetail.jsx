@@ -113,7 +113,14 @@ export default function EventDetail() {
   };
 
   const handleBack = () => {
-    navigate(createPageUrl('CurrentEvents'));
+    // Read from the URL itself (not location.state) so this survives a round
+    // trip through Profile: state doesn't persist across that extra hop, but
+    // a query param baked into the URL we hand to Profile's returnTo does.
+    if (params.get('from') === 'Home') {
+      navigate(createPageUrl('Home'));
+    } else {
+      navigate(createPageUrl('CurrentEvents'));
+    }
   };
 
   if (!eventId) {
@@ -249,7 +256,7 @@ export default function EventDetail() {
               <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Posted by</p>
               <div
                 className="flex items-center gap-4 cursor-pointer group"
-                onClick={() => navigate(createPageUrl('Profile') + '?user=' + encodeURIComponent(event.user_email) + '&back=EventDetail&eventId=' + encodeURIComponent(event.id))}
+                onClick={() => navigate(createPageUrl('Profile') + '?user=' + encodeURIComponent(event.user_email) + '&returnTo=' + encodeURIComponent(location.pathname + location.search))}
               >
                 <div className="w-14 h-14 rounded-full overflow-hidden bg-gradient-to-br from-fuchsia-200 to-violet-200 flex-shrink-0 flex items-center justify-center group-hover:ring-2 group-hover:ring-fuchsia-400 transition-all">
                   {poster?.avatar_url ? (
@@ -284,7 +291,7 @@ export default function EventDetail() {
                     <div
                       key={profile.user_email}
                       className="flex items-center gap-3 cursor-pointer group"
-                      onClick={() => navigate(createPageUrl('Profile') + '?user=' + encodeURIComponent(profile.user_email) + '&back=EventDetail&eventId=' + encodeURIComponent(event.id))}
+                      onClick={() => navigate(createPageUrl('Profile') + '?user=' + encodeURIComponent(profile.user_email) + '&returnTo=' + encodeURIComponent(location.pathname + location.search))}
                     >
                       <div className="w-10 h-10 rounded-full overflow-hidden bg-gradient-to-br from-fuchsia-200 to-violet-200 flex-shrink-0 flex items-center justify-center group-hover:ring-2 group-hover:ring-fuchsia-400 transition-all">
                         {profile.avatar_url ? (

@@ -1,8 +1,18 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { formatDistanceToNow } from 'date-fns';
-import { Film, UserPlus, CalendarDays, Eye, Bell, Loader2 } from 'lucide-react';
+import { Film, UserPlus, CalendarDays, Eye, Bell, Loader2, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { DEFAULT_AVATAR_TEMPLATE } from '@/lib/avatarTemplate';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 
 const TYPE_ICON = {
   reel_posted: Film,
@@ -11,8 +21,9 @@ const TYPE_ICON = {
   profile_view: Eye,
 };
 
-export default function NotificationPanel({ notifications, isLoading, onMarkRead, onMarkAllRead, onClose }) {
+export default function NotificationPanel({ notifications, isLoading, onMarkRead, onMarkAllRead, onDeleteAll, onClose }) {
   const navigate = useNavigate();
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
   const handleRowClick = (notification) => {
     if (!notification.is_read) {
@@ -20,8 +31,16 @@ export default function NotificationPanel({ notifications, isLoading, onMarkRead
     }
     if (onClose) onClose();
     if (notification.link_url) {
-      navigate(notification.link_url);
+      // The bell only lives in Home's header, so every notification click
+      // originates from Home — pass this state so pages like Reels (whose
+      // back button reads location.state.from) return there correctly.
+      navigate(notification.link_url, { state: { from: 'Home' } });
     }
+  };
+
+  const handleConfirmDeleteAll = () => {
+    onDeleteAll();
+    setShowDeleteConfirm(false);
   };
 
   return (
@@ -49,6 +68,10 @@ export default function NotificationPanel({ notifications, isLoading, onMarkRead
         ) : (
           notifications.map((notification) => {
             const Icon = TYPE_ICON[notification.type] || Bell;
+            const isSignup = notification.type === 'new_signup';
+            const hasActor = !!notification.actor_email;
+            const actorName = notification.actor_name || notification.actor_email?.split('@')[0] || 'Someone';
+
             return (
               <button
                 key={notification.id}
@@ -58,18 +81,41 @@ export default function NotificationPanel({ notifications, isLoading, onMarkRead
                   !notification.is_read && 'bg-violet-50'
                 )}
               >
-                <div className="w-8 h-8 rounded-full bg-violet-100 flex items-center justify-center flex-shrink-0 mt-0.5">
-                  <Icon className="w-4 h-4 text-violet-600" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-1.5">
-                    {!notification.is_read && (
-                      <span className="w-1.5 h-1.5 rounded-full bg-violet-600 flex-shrink-0" />
-                    )}
-                    <p className="text-sm font-medium text-slate-800 truncate">{notification.title}</p>
+                {hasActor ? (
+                  <img
+                    src={notification.actor_avatar_url || DEFAULT_AVATAR_TEMPLATE}
+                    alt={actorName}
+                    className="w-8 h-8 rounded-full object-cover flex-shrink-0 mt-0.5 border border-violet-100"
+                    onError={(e) => { e.currentTarget.onerror = null; e.currentTarget.src = DEFAULT_AVATAR_TEMPLATE; }}
+                  />
+                ) : (
+                  <div className="w-8 h-8 rounded-full bg-violet-100 flex items-center justify-center flex-shrink-0 mt-0.5">
+                    <Icon className="w-4 h-4 text-violet-600" />
                   </div>
-                  {notification.message && (
-                    <p className="text-xs text-slate-500 mt-0.5 line-clamp-2">{notification.message}</p>
+                )}
+                <div className="flex-1 min-w-0">
+                  {isSignup ? (
+                    <>
+                      <div className="flex items-center gap-1.5">
+                        {!notification.is_read && (
+                          <span className="w-1.5 h-1.5 rounded-full bg-violet-600 flex-shrink-0" />
+                        )}
+                        <p className="text-sm font-medium text-slate-800 truncate">{actorName}</p>
+                      </div>
+                      <p className="text-xs text-slate-500 mt-0.5">{notification.title}</p>
+                    </>
+                  ) : (
+                    <>
+                      <div className="flex items-center gap-1.5">
+                        {!notification.is_read && (
+                          <span className="w-1.5 h-1.5 rounded-full bg-violet-600 flex-shrink-0" />
+                        )}
+                        <p className="text-sm font-medium text-slate-800 truncate">{notification.title}</p>
+                      </div>
+                      {notification.message && (
+                        <p className="text-xs text-slate-500 mt-0.5 line-clamp-2">{notification.message}</p>
+                      )}
+                    </>
                   )}
                   <p className="text-[11px] text-slate-400 mt-1">
                     {formatDistanceToNow(new Date(notification.created_date), { addSuffix: true })}
@@ -80,6 +126,43 @@ export default function NotificationPanel({ notifications, isLoading, onMarkRead
           })
         )}
       </div>
+
+      {notifications.length > 0 && (
+        <div className="flex-shrink-0 border-t border-slate-100 px-4 py-2.5">
+          <button
+            onClick={() => setShowDeleteConfirm(true)}
+            className="w-full flex items-center justify-center gap-1.5 text-xs text-slate-500 hover:text-red-600 font-medium transition-colors"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+            Delete all notifications
+          </button>
+        </div>
+      )}
+
+      <AlertDialog open={showDeleteConfirm} onOpenChange={setShowDeleteConfirm}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete all notifications?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently delete all of your notifications. This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogAction
+              onClick={() => setShowDeleteConfirm(false)}
+              className="bg-slate-200 hover:bg-slate-300 text-slate-800"
+            >
+              Cancel
+            </AlertDialogAction>
+            <AlertDialogAction
+              onClick={handleConfirmDeleteAll}
+              className="bg-red-600 hover:bg-red-700 text-white"
+            >
+              Delete all
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

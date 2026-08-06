@@ -414,12 +414,28 @@ async function ensureUserProfileExists(userEmail, displayName = '', avatarUrl = 
   return createdProfile.rows[0] || null;
 }
 
+// Snapshot the actor's current name/avatar so notification history survives
+// even if their account is later deleted (actor_email -> NULL via ON DELETE SET NULL).
+async function getActorSnapshot(actorEmail) {
+  if (!actorEmail) return { name: null, avatar: null };
+  const res = await pool.query(
+    `SELECT u.name, p.avatar_url
+     FROM "User" u
+     LEFT JOIN "UserProfile" p ON p.user_email = u.email
+     WHERE u.email = $1`,
+    [actorEmail]
+  );
+  const row = res.rows[0];
+  return { name: row?.name || null, avatar: row?.avatar_url || null };
+}
+
 async function createNotification({ recipientEmail, actorEmail = null, type, title, message = null, linkUrl = null }) {
+  const snapshot = await getActorSnapshot(actorEmail);
   const result = await pool.query(
-    `INSERT INTO "Notification" (recipient_email, actor_email, type, title, message, link_url)
-     VALUES ($1, $2, $3, $4, $5, $6)
+    `INSERT INTO "Notification" (recipient_email, actor_email, type, title, message, link_url, actor_name_snapshot, actor_avatar_snapshot)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
      RETURNING *`,
-    [recipientEmail, actorEmail, type, title, message, linkUrl]
+    [recipientEmail, actorEmail, type, title, message, linkUrl, snapshot.name, snapshot.avatar]
   );
   return result.rows[0];
 }
@@ -427,14 +443,15 @@ async function createNotification({ recipientEmail, actorEmail = null, type, tit
 async function createNotificationsBulk(recipients, { actorEmail = null, type, title, message = null, linkUrl = null }) {
   if (!recipients || recipients.length === 0) return;
 
-  const rows = recipients.map(recipientEmail => [recipientEmail, actorEmail, type, title, message, linkUrl]);
+  const snapshot = await getActorSnapshot(actorEmail);
+  const rows = recipients.map(recipientEmail => [recipientEmail, actorEmail, type, title, message, linkUrl, snapshot.name, snapshot.avatar]);
   const placeholders = rows
-    .map((_, i) => `($${i * 6 + 1}, $${i * 6 + 2}, $${i * 6 + 3}, $${i * 6 + 4}, $${i * 6 + 5}, $${i * 6 + 6})`)
+    .map((_, i) => `($${i * 8 + 1}, $${i * 8 + 2}, $${i * 8 + 3}, $${i * 8 + 4}, $${i * 8 + 5}, $${i * 8 + 6}, $${i * 8 + 7}, $${i * 8 + 8})`)
     .join(',');
   const values = rows.flat();
 
   await pool.query(
-    `INSERT INTO "Notification" (recipient_email, actor_email, type, title, message, link_url)
+    `INSERT INTO "Notification" (recipient_email, actor_email, type, title, message, link_url, actor_name_snapshot, actor_avatar_snapshot)
      VALUES ${placeholders}`,
     values
   );
@@ -1343,6 +1360,14 @@ async function runMigrations() {
       } catch (e) {
       }
 
+      // Snapshot the actor's name/avatar at creation time so notification history
+      // survives even if the actor's account is later deleted (actor_email -> NULL).
+      try {
+        await pool.query(`ALTER TABLE "Notification" ADD COLUMN IF NOT EXISTS actor_name_snapshot VARCHAR(255)`);
+        await pool.query(`ALTER TABLE "Notification" ADD COLUMN IF NOT EXISTS actor_avatar_snapshot TEXT`);
+      } catch (e) {
+      }
+
       console.log('✅ Notification table ready');
     } catch (migErr) {
       console.warn('⚠️ Notification table migration note:', migErr.message);
@@ -2006,13 +2031,12 @@ app.post('/api/auth/signup', async (req, res) => {
     );
 
     (async () => {
-      const adminsRes = await pool.query(`SELECT email FROM "User" WHERE role = 'admin'`);
-      await createNotificationsBulk(adminsRes.rows.map(r => r.email), {
+      const usersRes = await pool.query('SELECT email FROM "User" WHERE email != $1', [email]);
+      await createNotificationsBulk(usersRes.rows.map(r => r.email), {
         actorEmail: email,
         type: 'new_signup',
-        title: 'New account created',
-        message: `${email} just signed up`,
-        linkUrl: '/AllProfiles',
+        title: 'New member joined',
+        linkUrl: `/Profile?user=${encodeURIComponent(email)}`,
       });
     })().catch(err => console.error('❌ [Notification:Signup]', err.message));
 
@@ -2466,6 +2490,16 @@ app.post('/api/auth/google', async (req, res) => {
         'INSERT INTO "User" (email, name, password_hash, is_email_verified) VALUES ($1, $2, $3, $4) RETURNING *',
         [email, name || email.split('@')[0], 'oauth_user', true]
       );
+
+      (async () => {
+        const usersRes = await pool.query('SELECT email FROM "User" WHERE email != $1', [email]);
+        await createNotificationsBulk(usersRes.rows.map(r => r.email), {
+          actorEmail: email,
+          type: 'new_signup',
+          title: 'New member joined',
+          linkUrl: `/Profile?user=${encodeURIComponent(email)}`,
+        });
+      })().catch(err => console.error('❌ [Notification:GoogleSignup]', err.message));
 
       // Send welcome email for new Google users
       const userName = name || email.split('@')[0];
@@ -2980,7 +3014,7 @@ app.post('/api/entities/:table', authenticateUser, async (req, res) => {
           type: 'new_event',
           title: 'New Event',
           message: `New event: ${event.title}`,
-          linkUrl: '/CurrentEvents',
+          linkUrl: `/EventDetail?id=${encodeURIComponent(event.id)}&from=Home`,
         });
       })().catch(err => console.error('❌ [Notification:Event]', err.message));
     }
@@ -2994,7 +3028,7 @@ app.post('/api/entities/:table', authenticateUser, async (req, res) => {
           type: 'reel_posted',
           title: 'New Reel posted',
           message: `${reel.user_email.split('@')[0]} posted a new reel`,
-          linkUrl: '/Reels',
+          linkUrl: `/Reels?reelId=${encodeURIComponent(reel.id)}`,
         });
       })().catch(err => console.error('❌ [Notification:Reel]', err.message));
     }
@@ -4386,7 +4420,15 @@ app.get('/api/notifications', authenticateUser, async (req, res) => {
     const offset = parseInt(req.query.offset, 10) || 0;
 
     const result = await pool.query(
-      `SELECT * FROM "Notification" WHERE recipient_email = $1 ORDER BY created_date DESC LIMIT $2 OFFSET $3`,
+      `SELECT n.*,
+              COALESCE(u.name, n.actor_name_snapshot) AS actor_name,
+              COALESCE(p.avatar_url, n.actor_avatar_snapshot) AS actor_avatar_url
+       FROM "Notification" n
+       LEFT JOIN "User" u ON n.actor_email = u.email
+       LEFT JOIN "UserProfile" p ON n.actor_email = p.user_email
+       WHERE n.recipient_email = $1
+       ORDER BY n.created_date DESC
+       LIMIT $2 OFFSET $3`,
       [userEmail, limit, offset]
     );
 
@@ -4441,6 +4483,21 @@ app.post('/api/notifications/read-all', authenticateUser, async (req, res) => {
     res.json({ updated: result.rowCount });
   } catch (error) {
     console.error('❌ [Notifications] Error marking all notifications read:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/notifications/delete-all - permanently delete all of the caller's notifications
+app.post('/api/notifications/delete-all', authenticateUser, async (req, res) => {
+  try {
+    const userEmail = req.authenticatedUser.email;
+    const result = await pool.query(
+      `DELETE FROM "Notification" WHERE recipient_email = $1`,
+      [userEmail]
+    );
+    res.json({ deleted: result.rowCount });
+  } catch (error) {
+    console.error('❌ [Notifications] Error deleting all notifications:', error.message);
     res.status(500).json({ error: error.message });
   }
 });

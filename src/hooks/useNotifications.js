@@ -66,6 +66,16 @@ export function useNotifications(userEmail) {
     onSuccess: invalidate,
   });
 
+  const deleteAllMutation = useMutation({
+    mutationFn: async () => {
+      await fetch(`${API_BASE_URL}/notifications/delete-all`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+      });
+    },
+    onSuccess: invalidate,
+  });
+
   return {
     unreadCount,
     notifications,
@@ -74,6 +84,7 @@ export function useNotifications(userEmail) {
     setIsPanelOpen,
     markRead: markReadMutation.mutate,
     markAllRead: markAllReadMutation.mutate,
+    deleteAll: deleteAllMutation.mutate,
   };
 }
 

@@ -1,5 +1,5 @@
 // @ts-nocheck
-import React, { useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { ArrowLeft, CalendarDays, CalendarPlus, MapPin, Trash2, User } from 'lucide-react';
 import { motion } from 'framer-motion';
@@ -8,6 +8,9 @@ import { Button } from '@/components/ui/button';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { base44 } from '@/api/base44Client';
 import { toast } from 'sonner';
+import { bulkGeocodeProfiles, getProfileCoords, calculateDistanceMiles } from '@/lib/zipGeocode';
+
+const EVENTS_RADIUS_MILES = 300;
 
 function formatDateRange(startsAt, endsAt) {
   const opts = { month: 'short', day: 'numeric', year: 'numeric' };
@@ -40,6 +43,28 @@ export default function CurrentEvents() {
     },
     staleTime: 60000,
   });
+
+  const { data: myProfile = null } = useQuery({
+    queryKey: ['currentEventsMyProfile', currentUser?.email],
+    queryFn: async () => {
+      const rows = await base44.entities.UserProfile.filter({ user_email: currentUser.email });
+      return rows[0] || null;
+    },
+    enabled: !!currentUser?.email,
+    staleTime: 60000,
+  });
+
+  const [myCoords, setMyCoords] = useState(null);
+
+  useEffect(() => {
+    if (!myProfile) return;
+    let cancelled = false;
+    (async () => {
+      await bulkGeocodeProfiles([myProfile]);
+      if (!cancelled) setMyCoords(getProfileCoords(myProfile));
+    })();
+    return () => { cancelled = true; };
+  }, [myProfile]);
 
   const { data: allEvents = [], isLoading } = useQuery({
 
@@ -77,11 +102,21 @@ export default function CurrentEvents() {
     return map;
   }, [posterProfiles]);
 
-  // Client-side filter: drop events past their end date
-  const events = useMemo(
-    () => allEvents.filter((ev) => new Date(ev.ends_at).getTime() > now),
-    [allEvents, now]
-  );
+  // Client-side filter: drop events past their end date, and (for non-admins)
+  // events further than EVENTS_RADIUS_MILES away. Events/users missing location
+  // data are shown anyway rather than hidden, since distance can't be determined.
+  const events = useMemo(() => {
+    const notExpired = allEvents.filter((ev) => new Date(ev.ends_at).getTime() > now);
+
+    if (currentUser?.role === 'admin' || !myCoords) return notExpired;
+
+    return notExpired.filter((ev) => {
+      const eventCoords = getProfileCoords(ev);
+      if (!eventCoords) return true;
+      const distance = calculateDistanceMiles(myCoords.lat, myCoords.lon, eventCoords.lat, eventCoords.lon);
+      return distance === null || distance <= EVENTS_RADIUS_MILES;
+    });
+  }, [allEvents, now, myCoords, currentUser?.role]);
 
   const deleteEventMutation = useMutation({
     mutationFn: async (eventId) => base44.entities.Event.delete(eventId),

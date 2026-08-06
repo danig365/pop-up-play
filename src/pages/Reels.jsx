@@ -25,6 +25,12 @@ export default function Reels() {
   const paywallTimerRef = useRef(null);
   const pendingReopenPaywallFeatureRef = useRef(null);
   const backTarget = location.state?.from === 'Home' ? createPageUrl('Home') : createPageUrl('Menu');
+  // Captured once at mount, before the URL param gets stripped below.
+  const pendingReelIdRef = useRef(new URLSearchParams(window.location.search).get('reelId'));
+  // Unlike pendingReelIdRef (cleared once resolved), this stays true for the
+  // whole page visit — arriving via a reel notification locks the viewer to
+  // just that reel, disabling swipe/wheel/arrow-key navigation to others.
+  const isSingleReelLockRef = useRef(!!pendingReelIdRef.current);
 
   useEffect(() => {
     const loadUser = async () => {
@@ -45,6 +51,14 @@ export default function Reels() {
       params.delete('reelIndex');
     }
 
+    // Deep-link to a specific reel (e.g. from a "New Reel posted" notification).
+    // The actual index is resolved once the feed loads, in the effect below —
+    // storing a raw index here would go stale as new reels get posted.
+    const hasReelId = params.has('reelId');
+    if (hasReelId) {
+      params.delete('reelId');
+    }
+
     const hasReopenFlag = params.get('reopenPaywall') === '1';
     if (hasReopenFlag) {
       pendingReopenPaywallFeatureRef.current = params.get('paywallFeature') || 'view reels';
@@ -54,7 +68,7 @@ export default function Reels() {
       params.delete('paywallFeature');
     }
 
-    if (reelIndex !== null || hasReopenFlag) {
+    if (reelIndex !== null || hasReelId || hasReopenFlag) {
       const nextSearch = params.toString();
       const nextUrl = nextSearch ? `${window.location.pathname}?${nextSearch}` : window.location.pathname;
       window.history.replaceState({}, '', nextUrl);
@@ -78,6 +92,14 @@ export default function Reels() {
     },
     refetchInterval: 30000
   });
+
+  // Once the feed loads, jump to the requested reel's *current* position.
+  useEffect(() => {
+    if (!pendingReelIdRef.current || reels.length === 0) return;
+    const idx = reels.findIndex((r) => r.id === pendingReelIdRef.current);
+    if (idx !== -1) setCurrentIndex(idx);
+    pendingReelIdRef.current = null;
+  }, [reels]);
 
   const { data: profiles = [] } = useQuery({
     queryKey: ['reelProfiles', reels],
@@ -143,10 +165,12 @@ export default function Reels() {
   };
 
   const handleNextReel = () => {
+    if (isSingleReelLockRef.current) return;
     setCurrentIndex(prev => Math.min(prev + 1, reels.length - 1));
   };
 
   const handlePreviousReel = () => {
+    if (isSingleReelLockRef.current) return;
     setCurrentIndex(prev => Math.max(prev - 1, 0));
   };
 
