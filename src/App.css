@@ -14,7 +14,7 @@
 .leaflet-popup-content {
   margin: 0;
   width: auto !important;
-  max-width: 280px;
+  max-width: 220px;
   pointer-events: auto !important;
 }
 

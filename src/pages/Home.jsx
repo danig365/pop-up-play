@@ -1,7 +1,7 @@
 // @ts-nocheck
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { base44 } from '@/api/base44Client';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
 import CityMap from '@/components/map/CityMap';
 import PopToggle from '@/components/popup/PopToggle';
@@ -18,16 +18,22 @@ preloadImg.src = reelsImage;
 import { Textarea } from '@/components/ui/textarea';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { useNavigate } from 'react-router-dom';
 import ScrollControl from '@/components/map/ScrollControl';
 import NavigationMenu from '@/components/navigation/NavigationMenu';
 import NotificationBell from '@/components/notifications/NotificationBell';
-import { useSubscription } from '@/lib/SubscriptionContext';
 import { isLocationEnabled, requestCurrentLocation, setLocationEnabled } from '@/lib/locationPermission';
 import { isRequiredProfileComplete } from '@/lib/profileCompletion';
 import { getApiBaseUrl } from '@/lib/apiUrl';
 
 const API_BASE_URL = getApiBaseUrl();
+
+function getAuthHeaders(extra = {}) {
+  const token = localStorage.getItem('popup_auth_token');
+  return {
+    ...extra,
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+}
 
 const GENDER_OPTIONS = [
   { value: 'all', label: 'All genders' },
@@ -49,8 +55,6 @@ export default function Home() {
   const [openAd, setOpenAd] = useState(null);
   const [genderFilter, setGenderFilter] = useState('female');
   const queryClient = useQueryClient();
-  const navigate = useNavigate();
-  const { guardAction } = useSubscription();
 
   useEffect(() => {
     const loadUser = async () => {
@@ -86,19 +90,56 @@ export default function Home() {
   });
   const isProfileComplete = isRequiredProfileComplete(myProfile);
 
+  // Markers actually rendered on the map — scoped to the current viewport
+  // (plus a buffer margin) instead of fetching every popped-up user nationwide.
+  // mapBounds is set by CityMap via a debounced pan/zoom handler.
+  const [mapBounds, setMapBounds] = useState(null);
+
   const { data: activeUsers = [] } = useQuery({
-    queryKey: ['activeUsers'],
+    queryKey: ['mapNearbyProfiles', mapBounds],
     queryFn: async () => {
-      const profiles = await base44.entities.UserProfile.filter({ is_popped_up: true });
-      return profiles;
+      const params = new URLSearchParams();
+      if (mapBounds) {
+        params.set('minLat', mapBounds.minLat);
+        params.set('maxLat', mapBounds.maxLat);
+        params.set('minLng', mapBounds.minLng);
+        params.set('maxLng', mapBounds.maxLng);
+      }
+      const res = await fetch(`${API_BASE_URL}/map/nearby-profiles?${params}`, { headers: getAuthHeaders() });
+      const data = await res.json().catch(() => []);
+      return Array.isArray(data) ? data : [];
     },
-    refetchInterval: 30000 // Refresh every 30 seconds
+    enabled: !!user?.email,
+    // Every pan/zoom produces a new mapBounds value, which React Query treats
+    // as a brand-new query key. Without this, markers briefly vanish (data
+    // resets to the [] default) each time until the new bounds' fetch resolves.
+    // Keeping the previous viewport's markers on screen until the new ones
+    // arrive avoids that flicker.
+    placeholderData: keepPreviousData,
   });
+
+  // Lightweight, separate total count for the "Members Popped Up" badge —
+  // intentionally unbounded (a global stat, not a viewport-scoped one), and
+  // cheap now that stale pop-ups auto-expire instead of accumulating forever.
+  const { data: allActiveProfiles = [] } = useQuery({
+    queryKey: ['mapTotalActiveCount'],
+    queryFn: async () => {
+      const res = await fetch(`${API_BASE_URL}/map/nearby-profiles`, { headers: getAuthHeaders() });
+      const data = await res.json().catch(() => []);
+      return Array.isArray(data) ? data : [];
+    },
+    enabled: !!user?.email,
+    refetchInterval: 60000,
+  });
+  const totalActiveCount = allActiveProfiles.length;
 
   const filteredActiveUsers = useMemo(() => {
     if (genderFilter === 'all') return activeUsers;
-    return activeUsers.filter((profile) => profile.gender === genderFilter);
-  }, [activeUsers, genderFilter]);
+    // The gender filter is for browsing OTHER people — it should never hide
+    // your own pin. Without this, popping up while your gender doesn't match
+    // the currently-selected filter makes you invisible on your own map.
+    return activeUsers.filter((profile) => profile.gender === genderFilter || profile.id === myProfile?.id);
+  }, [activeUsers, genderFilter, myProfile?.id]);
 
   const { data: unreadMessagesRaw = [] } = useQuery({
     queryKey: ['unreadMessagesList', user?.email],
@@ -439,7 +480,7 @@ export default function Home() {
                 className="w-full bg-gradient-to-r from-emerald-500 to-green-600 hover:from-emerald-600 hover:to-green-700 text-white px-5 py-3 rounded-full shadow-xl hover:shadow-2xl transition-all flex items-center gap-2 text-sm font-semibold justify-center"
                 style={{ zIndex: 1000 }}>
                 <User className="w-4 h-4" />
-                Members Popped Up on the Map ({activeUsers.length})
+                Members Popped Up on the Map ({totalActiveCount})
               </Button>
             </Link>
             <Link to={createPageUrl('Reels')} state={{ from: 'Home' }} className="w-full">
@@ -506,18 +547,11 @@ export default function Home() {
 
             <CityMap
               activeUsers={filteredActiveUsers}
-              totalActiveCount={activeUsers.length}
-              currentUserProfile={myProfile}
+              totalActiveCount={totalActiveCount}
+              currentUserEmail={user?.email}
               userLocation={userLocation}
               unreadMessages={unreadMessages}
-              onProfileClick={(profile) => {
-                if (!guardAction('view full profiles')) return;
-                navigate(
-                  createPageUrl('Profile') +
-                  '?user=' + encodeURIComponent(profile.user_email) +
-                  '&back=Home'
-                );
-              }} />
+              onBoundsChange={setMapBounds} />
 
             <ScrollControl />
           </motion.div>

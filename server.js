@@ -12,6 +12,7 @@ import nodemailer from 'nodemailer';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
+import sharp from 'sharp';
 import { fileURLToPath } from 'url';
 import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
@@ -244,6 +245,7 @@ const poolConfig = {
   host: resolveDbHost(),
   port: parseInt(process.env.DB_PORT, 10) || 5432,
   database: process.env.DB_NAME || 'popup_play_db',
+  max: parseInt(process.env.DB_POOL_MAX, 10) || 20,
 };
 
 // Only add password if explicitly set (not empty string)
@@ -415,6 +417,40 @@ async function ensureUserProfileExists(userEmail, displayName = '', avatarUrl = 
 }
 
 // Snapshot the actor's current name/avatar so notification history survives
+const AVATAR_THUMB_SIZE = 96;
+
+// Generate a small WebP thumbnail for a self-hosted avatar upload and store it in
+// avatar_thumb_url. Skips Google-hosted avatars (already served pre-sized via
+// Google's own `=s96-c` URL suffix) and anything not under our own uploads path.
+async function generateAvatarThumbnail(avatarUrl, profileId) {
+  try {
+    if (!avatarUrl || !avatarUrl.includes('/api/uploads/')) return;
+    const filename = avatarUrl.split('/api/uploads/')[1];
+    if (!filename) return;
+
+    const sourcePath = path.join(uploadsDir, filename);
+    if (!fs.existsSync(sourcePath)) return;
+
+    const thumbFilename = `thumb_${filename.replace(/\.[^.]+$/, '')}.webp`;
+    const thumbPath = path.join(uploadsDir, thumbFilename);
+
+    await sharp(sourcePath)
+      .rotate() // auto-orient using the photo's EXIF orientation tag before resizing —
+                // without this, phone photos taken in portrait (which store orientation
+                // as metadata, not baked into the pixels) come out rotated/upside-down
+                // once the thumbnail strips that metadata.
+      .resize(AVATAR_THUMB_SIZE, AVATAR_THUMB_SIZE, { fit: 'cover' })
+      .webp({ quality: 80 })
+      .toFile(thumbPath);
+
+    const thumbUrl = `/api/uploads/${thumbFilename}`;
+    await pool.query(`UPDATE "UserProfile" SET avatar_thumb_url = $1 WHERE id = $2`, [thumbUrl, profileId]);
+    console.log(`✅ [AvatarThumb] Generated thumbnail for profile ${profileId}`);
+  } catch (error) {
+    console.error('❌ [AvatarThumb] Failed to generate thumbnail:', error.message);
+  }
+}
+
 // even if their account is later deleted (actor_email -> NULL via ON DELETE SET NULL).
 async function getActorSnapshot(actorEmail) {
   if (!actorEmail) return { name: null, avatar: null };
@@ -1407,6 +1443,19 @@ async function runMigrations() {
       await pool.query(`ALTER TABLE "UserProfile" ADD COLUMN IF NOT EXISTS last_active TIMESTAMP`);
       await pool.query(`CREATE INDEX IF NOT EXISTS idx_userprofile_last_active ON "UserProfile"(last_active)`);
     } catch (e) { console.warn('⚠️ last_active migration note:', e.message); }
+
+    // Map performance: partial index for the popped-up-users query (was a sequential
+    // scan) and a composite lat/lng index to support bounding-box map queries.
+    try {
+      await pool.query(`CREATE INDEX IF NOT EXISTS idx_userprofile_popped_up ON "UserProfile"(is_popped_up) WHERE is_popped_up = true`);
+      await pool.query(`CREATE INDEX IF NOT EXISTS idx_userprofile_lat_lng ON "UserProfile"(latitude, longitude)`);
+    } catch (e) { console.warn('⚠️ map performance index migration note:', e.message); }
+
+    // Small thumbnail variant of avatar_url, generated server-side for map pins
+    // (see generateAvatarThumbnail) — avatar_url itself is left untouched.
+    try {
+      await pool.query(`ALTER TABLE "UserProfile" ADD COLUMN IF NOT EXISTS avatar_thumb_url TEXT`);
+    } catch (e) { console.warn('⚠️ avatar_thumb_url migration note:', e.message); }
 
     // Heal access-code subscriptions that have no end_date (they would never expire).
     // Set end_date to 1 month after start_date (or 1 month from now if start_date is missing).
@@ -2670,11 +2719,27 @@ app.post('/api/access-code/redeem', authenticateUser, async (req, res) => {
     );
     console.log(`🔑 [RedeemCode] Code marked as used: ${normalizedCode}`);
 
-    // Subscription always lasts exactly 1 month from the moment of redemption,
-    // regardless of the access code's own valid_until (which only gates redemption).
+    // The subscription should last as long as the code's creator intended —
+    // e.g. a code created with "90 days" set should grant 90 days of access,
+    // counted from the moment it's actually redeemed (not from when it was
+    // created, so a code redeemed weeks later still gives the full duration).
+    // That intended duration is the gap between the code's own created_date
+    // and valid_until. This used to be hardcoded to always add exactly 1
+    // month regardless of what the code was created for, so e.g. a 90-day
+    // code only ever granted the user 30 days.
     const redemptionDate = new Date();
-    const subscriptionEnd = new Date(redemptionDate);
-    subscriptionEnd.setMonth(subscriptionEnd.getMonth() + 1);
+    let subscriptionEnd = null;
+    if (accessCode.valid_until && accessCode.created_date) {
+      const intendedDurationMs = new Date(accessCode.valid_until).getTime() - new Date(accessCode.created_date).getTime();
+      if (intendedDurationMs > 0) {
+        subscriptionEnd = new Date(redemptionDate.getTime() + intendedDurationMs);
+      }
+    }
+    if (!subscriptionEnd) {
+      // Fallback for a code with no valid_until/created_date on record.
+      subscriptionEnd = new Date(redemptionDate);
+      subscriptionEnd.setMonth(subscriptionEnd.getMonth() + 1);
+    }
 
     // Check if user already has a subscription
     const existingSubResult = await pool.query(
@@ -3237,6 +3302,11 @@ app.put('/api/entities/:table/:id', authenticateUser, async (req, res) => {
       if (!wasPopped && isPopped) {
         sendPopupProximityEmails(updatedProfile);
       }
+
+      if (data?.avatar_url && data.avatar_url !== previousProfile?.avatar_url) {
+        generateAvatarThumbnail(data.avatar_url, updatedProfile.id)
+          .catch(err => console.error('❌ [AvatarThumb] Unhandled error:', err.message));
+      }
     }
 
     if (table === 'Event') {
@@ -3615,6 +3685,43 @@ app.post('/api/geocode-zips', async (req, res) => {
   } catch (err) {
     console.error('❌ [geocode-zips] Error:', err.message);
     res.status(500).json({ error: 'Geocoding failed' });
+  }
+});
+
+/**
+ * GET /api/map/nearby-profiles?minLat=&maxLat=&minLng=&maxLng=
+ * Returns only is_popped_up profiles within the given bounding box, and only
+ * the columns the map actually renders — a deliberately new, map-specific
+ * endpoint rather than a change to the generic UserProfile filter endpoint
+ * (which other features rely on with full-column expectations).
+ * Bounds are optional: if omitted, returns all popped-up profiles (used for
+ * the initial load before the map has bounds yet).
+ */
+app.get('/api/map/nearby-profiles', authenticateUser, async (req, res) => {
+  try {
+    const { minLat, maxLat, minLng, maxLng } = req.query;
+    const hasBounds = [minLat, maxLat, minLng, maxLng].every(v => v !== undefined && v !== '' && Number.isFinite(Number(v)));
+
+    const columns = `id, user_email, display_name, avatar_url, avatar_thumb_url, age, gender,
+                     latitude, longitude, is_popped_up, popup_message, location`;
+
+    let query, params;
+    if (hasBounds) {
+      query = `SELECT ${columns} FROM "UserProfile"
+                WHERE is_popped_up = true
+                  AND latitude BETWEEN $1 AND $2
+                  AND longitude BETWEEN $3 AND $4`;
+      params = [Number(minLat), Number(maxLat), Number(minLng), Number(maxLng)];
+    } else {
+      query = `SELECT ${columns} FROM "UserProfile" WHERE is_popped_up = true`;
+      params = [];
+    }
+
+    const result = await pool.query(query, params);
+    res.json(result.rows);
+  } catch (error) {
+    console.error('❌ [map/nearby-profiles] Error:', error.message);
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -6205,12 +6312,29 @@ app.post('/api/subscription/cancel', authenticateUserStrict, async (req, res) =>
   }
 });
 
-// ============ Auto pop-down DISABLED ============
-// Users stay popped up indefinitely until they manually pop down.
-// The cleanupStalePopups function has been removed.
+// ============ Auto pop-down for stale entries ============
+// Product decision: staying "popped up" is a manual choice (users pop down
+// themselves) and should NOT expire on a short timer. This is only a safety
+// net for accounts that are truly abandoned (app deleted/uninstalled, never
+// coming back) so they don't clutter the map forever — real users popping up
+// and using the app normally are never affected by this.
+const POPUP_STALE_HOURS = 24 * 30; // 30 days
 
-// cleanupStalePopups API endpoint removed — auto pop-down is disabled.
-// Users remain popped up until they manually pop down.
+async function cleanupStalePopups() {
+  try {
+    const result = await pool.query(
+      `UPDATE "UserProfile"
+       SET is_popped_up = false, popup_message = ''
+       WHERE is_popped_up = true
+         AND (last_active IS NULL OR last_active < NOW() - INTERVAL '${POPUP_STALE_HOURS} hours')`
+    );
+    if (result.rowCount > 0) {
+      console.log(`ℹ️ [AutoPopDown] Popped down ${result.rowCount} stale user(s) (no heartbeat in ${POPUP_STALE_HOURS}h)`);
+    }
+  } catch (error) {
+    console.error('❌ [AutoPopDown] Cleanup error:', error.message);
+  }
+}
 
 // ============ Test Proximity Email (dry-run + optional live send) ============
 
@@ -6342,8 +6466,9 @@ const server = app.listen(PORT, async () => {
     console.warn('⚠️ Seeding completed with warnings:', err.message);
   });
 
-  // Auto pop-down disabled — users stay popped up until they manually pop down.
-  console.log('ℹ️ Auto pop-down is disabled. Users stay popped up until they choose to pop down.');
+  // Auto pop-down: clean up abandoned-account entries immediately on boot, then once a day.
+  cleanupStalePopups();
+  setInterval(cleanupStalePopups, 24 * 60 * 60 * 1000);
 });
 
 // Also listen on port 3000 so the frontend and /api/uploads/ are served from the same origin

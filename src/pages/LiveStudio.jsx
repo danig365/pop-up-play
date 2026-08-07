@@ -16,7 +16,7 @@ import { toast } from 'sonner';
 import { Room, RoomEvent, createLocalVideoTrack } from 'livekit-client';
 
 const API_BASE_URL = getApiBaseUrl();
-
+  
 function getAuthHeaders(extra = {}) {
   const token = localStorage.getItem('popup_auth_token');
   return {
