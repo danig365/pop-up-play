@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { base44 } from '@/api/base44Client';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -9,6 +9,17 @@ import { createPageUrl } from '@/utils';
 import ReelViewer from '@/components/reels/ReelViewer';
 import ReelUpload from '@/components/reels/ReelUpload';
 import { useSubscription } from '@/lib/SubscriptionContext';
+import { getApiBaseUrl } from '@/lib/apiUrl';
+
+const API_BASE_URL = getApiBaseUrl();
+
+function getAuthHeaders(extra = {}) {
+  const token = localStorage.getItem('popup_auth_token');
+  return {
+    ...extra,
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+}
 
 export default function Reels() {
   const location = useLocation();
@@ -89,8 +100,13 @@ export default function Reels() {
     queryFn: async () => {
       const allReels = await base44.entities.Reel.list('-created_date');
       return allReels;
-    },
-    refetchInterval: 30000
+    }
+    // No refetchInterval — this used to poll the full reel list every 30s
+    // unconditionally (even backgrounded/idle), which also re-triggered the
+    // profile lookup below on every tick since its key included `reels`.
+    // React Query's own defaults (refetch on window focus/reconnect) plus the
+    // explicit invalidateQueries on upload-complete below are enough to keep
+    // this fresh without polling in the background forever.
   });
 
   // Once the feed loads, jump to the requested reel's *current* position.
@@ -101,15 +117,27 @@ export default function Reels() {
     pendingReelIdRef.current = null;
   }, [reels]);
 
+  // A stable, value-based key (not the `reels` array reference, which is a
+  // new object on every refetch even with identical data) — otherwise this
+  // query re-runs every time `reels` refetches, not just when the actual set
+  // of authors changes.
+  const uniqueAuthorEmails = useMemo(() => [...new Set(reels.map(r => r.user_email))].sort(), [reels]);
+
   const { data: profiles = [] } = useQuery({
-    queryKey: ['reelProfiles', reels],
+    queryKey: ['reelProfiles', uniqueAuthorEmails.join(',')],
     queryFn: async () => {
-      if (reels.length === 0) return [];
-      const userEmails = [...new Set(reels.map(r => r.user_email))];
-      const allProfiles = await base44.entities.UserProfile.filter({});
-      return allProfiles.filter(p => userEmails.includes(p.user_email));
+      // Trimmed, purpose-built lookup for just the ~30 reel authors instead
+      // of UserProfile.filter({}), which fetched every column of every
+      // profile in the whole database (confirmed live: 639KB for this).
+      const res = await fetch(`${API_BASE_URL}/reels/author-profiles`, {
+        method: 'POST',
+        headers: getAuthHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ emails: uniqueAuthorEmails }),
+      });
+      const data = await res.json().catch(() => []);
+      return Array.isArray(data) ? data : [];
     },
-    enabled: reels.length > 0
+    enabled: uniqueAuthorEmails.length > 0
   });
 
   const getProfileForReel = (reel) => {
@@ -327,6 +355,19 @@ export default function Reels() {
             </motion.div>
           )}
         </AnimatePresence>
+
+        {/* Off-screen (not display:none, so browsers actually fetch it) video
+            that hints the next reel's bytes in ahead of the swipe. Never
+            attached to the visible tree or played. */}
+        {reels[currentIndex + 1] && (
+          <video
+            key={`preload-${reels[currentIndex + 1].id}`}
+            src={reels[currentIndex + 1].compressed_video_url || reels[currentIndex + 1].video_url}
+            preload="auto"
+            muted
+            playsInline
+            className="absolute w-px h-px opacity-0 pointer-events-none -z-10" />
+        )}
       </div>
 
       {/* Upload Modal */}

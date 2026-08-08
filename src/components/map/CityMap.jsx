@@ -219,6 +219,10 @@ export default function CityMap({ activeUsers, totalActiveCount, currentUserEmai
         maxZoom={MAX_SAFE_MAP_ZOOM}
         className="w-full h-full"
         zoomControl={false}
+        // An open popup should only close via its own X button or by opening
+        // a different marker's popup — not by an incidental tap/click on a
+        // blank part of the map (Leaflet's default behavior otherwise).
+        closePopupOnClick={false}
       >
         <TileLayer
           attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'

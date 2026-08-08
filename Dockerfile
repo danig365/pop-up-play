@@ -1,5 +1,9 @@
 FROM node:20-alpine
 
+# Needed to transcode uploaded reel videos (server-side compression + poster
+# frame extraction) — see transcodeReel() in server.js.
+RUN apk add --no-cache ffmpeg
+
 WORKDIR /app
 
 # Copy package files

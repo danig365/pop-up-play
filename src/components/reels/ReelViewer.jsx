@@ -4,7 +4,17 @@ import { Heart, MessageCircle, Share2, MoreVertical, Volume2, VolumeX } from 'lu
 import { Button } from '@/components/ui/button';
 import { Link } from 'react-router-dom';
 import { createPageUrl } from '@/utils';
-import { base44 } from '@/api/base44Client';
+import { getApiBaseUrl } from '@/lib/apiUrl';
+
+const API_BASE_URL = getApiBaseUrl();
+
+function getAuthHeaders(extra = {}) {
+  const token = localStorage.getItem('popup_auth_token');
+  return {
+    ...extra,
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+}
 
 export default function ReelViewer({ reel, profile, isActive, blocked = false, onToggleMute, onForceMute, onForceUnmute, isMuted, reelIndex }) {
   const videoRef = useRef(null);
@@ -21,8 +31,16 @@ export default function ReelViewer({ reel, profile, isActive, blocked = false, o
     if (isActive && !viewCounted && reel?.id) {
       const incrementView = async () => {
         try {
-          await base44.entities.Reel.update(reel.id, { views: (reel.views || 0) + 1 });
-          setViews((reel.views || 0) + 1);
+          const res = await fetch(`${API_BASE_URL}/reels/${reel.id}/view`, {
+            method: 'POST',
+            headers: getAuthHeaders(),
+          });
+          const data = await res.json().catch(() => null);
+          if (data && typeof data.views === 'number') {
+            setViews(data.views);
+          } else {
+            setViews((reel.views || 0) + 1);
+          }
           setViewCounted(true);
         } catch (error) {
           // Silently fail
@@ -168,10 +186,14 @@ export default function ReelViewer({ reel, profile, isActive, blocked = false, o
 
   return (
     <div className="relative w-full h-full bg-black">
-      {/* Video */}
+      {/* Video — compressed_video_url is generated server-side a short while
+          after upload (or during the one-time backfill for older reels); the
+          fallback to the original video_url is what makes this safe to ship
+          regardless of how far along that processing is for any given reel. */}
       <video
         ref={videoRef}
-        src={reel.video_url}
+        src={reel.compressed_video_url || reel.video_url}
+        poster={reel.thumbnail_url || undefined}
         className="w-full h-full object-contain cursor-pointer"
         loop
         playsInline
@@ -208,7 +230,7 @@ export default function ReelViewer({ reel, profile, isActive, blocked = false, o
           <div className="flex items-center gap-3 mb-3">
             <div className="w-12 h-12 rounded-full overflow-hidden border-2 border-white">
               <img
-                src={profile?.avatar_url || `data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect fill='%23ddd6fe' width='100' height='100'/%3E%3Ccircle cx='50' cy='38' r='18' fill='%23a78bfa'/%3E%3Cellipse cx='50' cy='80' rx='28' ry='22' fill='%23a78bfa'/%3E%3C/svg%3E`}
+                src={profile?.avatar_thumb_url || profile?.avatar_url || `data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect fill='%23ddd6fe' width='100' height='100'/%3E%3Ccircle cx='50' cy='38' r='18' fill='%23a78bfa'/%3E%3Cellipse cx='50' cy='80' rx='28' ry='22' fill='%23a78bfa'/%3E%3C/svg%3E`}
                 alt="Profile"
                 onError={(e) => { e.currentTarget.onerror = null; e.currentTarget.src = `data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect fill='%23ddd6fe' width='100' height='100'/%3E%3Ccircle cx='50' cy='38' r='18' fill='%23a78bfa'/%3E%3Cellipse cx='50' cy='80' rx='28' ry='22' fill='%23a78bfa'/%3E%3C/svg%3E`; }}
                 className="w-full h-full object-cover" />
@@ -218,9 +240,9 @@ export default function ReelViewer({ reel, profile, isActive, blocked = false, o
                 {profile?.display_name || 'Unknown User'}
               </p>
               <p className="text-white/70 text-sm">
-                {profile?.current_city}
-                {profile?.current_city && profile?.current_state ? ', ' : ''}
-                {profile?.current_state}
+                {profile?.city}
+                {profile?.city && profile?.state ? ', ' : ''}
+                {profile?.state}
               </p>
             </div>
           </div>

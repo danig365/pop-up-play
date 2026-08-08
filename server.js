@@ -13,6 +13,8 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import sharp from 'sharp';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import { fileURLToPath } from 'url';
 import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
@@ -448,6 +450,167 @@ async function generateAvatarThumbnail(avatarUrl, profileId) {
     console.log(`✅ [AvatarThumb] Generated thumbnail for profile ${profileId}`);
   } catch (error) {
     console.error('❌ [AvatarThumb] Failed to generate thumbnail:', error.message);
+  }
+}
+
+const execFileAsync = promisify(execFile);
+
+// This container also serves live traffic, and ffmpeg is CPU-heavy — only run
+// one transcode at a time. When this guard is already held, transcodeReel()
+// just no-ops; the periodic sweep (see below) will pick the reel up later.
+let reelTranscodeInProgress = false;
+
+// Generate a compressed, faststart-enabled .mp4 (normalizing the container
+// regardless of input format) plus a poster frame for a reel's video_url,
+// storing them in compressed_video_url/thumbnail_url. video_url itself is
+// never modified or deleted. Presence of compressed_video_url signals
+// "ready" — no separate status column, same pattern as avatar_thumb_url.
+async function transcodeReel(reel) {
+  if (!reel?.video_url || !reel.video_url.includes('/api/uploads/')) return;
+  if (reelTranscodeInProgress) return;
+
+  const filename = reel.video_url.split('/api/uploads/')[1];
+  if (!filename) return;
+  const sourcePath = path.join(uploadsDir, filename);
+  if (!fs.existsSync(sourcePath)) return;
+
+  reelTranscodeInProgress = true;
+  const baseName = filename.replace(/\.[^.]+$/, '');
+  const posterFilename = `poster_${baseName}.jpg`;
+  const posterTmpPath = path.join(uploadsDir, `.tmp_${posterFilename}`);
+  const posterFinalPath = path.join(uploadsDir, posterFilename);
+  const videoFilename = `compressed_${baseName}.mp4`;
+  const videoTmpPath = path.join(uploadsDir, `.tmp_${videoFilename}`);
+  const videoFinalPath = path.join(uploadsDir, videoFilename);
+
+  // Atomic claim across processes (the in-process reelTranscodeInProgress
+  // guard above only protects against this same server.js instance — it did
+  // NOT protect against the one-off backfill script running concurrently
+  // against the same row, which corrupted a few output files by both writing
+  // to the same tmp path at once. An empty string is a distinct, falsy
+  // "claimed, in progress" state — the frontend's `compressed_video_url ||
+  // video_url` fallback still shows the original untouched while claimed.
+  try {
+    const claim = await pool.query(
+      `UPDATE "Reel" SET compressed_video_url = '' WHERE id = $1 AND compressed_video_url IS NULL RETURNING id`,
+      [reel.id]
+    );
+    if (claim.rowCount === 0) { reelTranscodeInProgress = false; return; }
+  } catch (claimError) {
+    reelTranscodeInProgress = false;
+    console.error(`❌ [ReelTranscode] Claim failed for reel ${reel.id}:`, claimError.message);
+    return;
+  }
+
+  try {
+    // 1. Poster frame first (cheap) — a thumbnail exists even if the heavier
+    // transcode step below fails. Skip 1s in to avoid a black first frame;
+    // very short clips fall back to the very start.
+    try {
+      await execFileAsync('ffmpeg', [
+        '-y', '-ss', '1', '-i', sourcePath,
+        '-frames:v', '1', '-q:v', '2', '-vf', "scale='min(720,iw)':-2",
+        posterTmpPath
+      ], { timeout: 60_000 });
+    } catch {
+      await execFileAsync('ffmpeg', [
+        '-y', '-ss', '0', '-i', sourcePath,
+        '-frames:v', '1', '-q:v', '2', '-vf', "scale='min(720,iw)':-2",
+        posterTmpPath
+      ], { timeout: 60_000 });
+    }
+    fs.renameSync(posterTmpPath, posterFinalPath);
+    await pool.query(`UPDATE "Reel" SET thumbnail_url = $1 WHERE id = $2`, [`/api/uploads/${posterFilename}`, reel.id]);
+
+    // 2. Compressed video. -movflags +faststart moves metadata to the front
+    // of the file — this is what actually fixes the measured "same file
+    // fetched 2-3x nearly in full" problem, not just the smaller file size.
+    await execFileAsync('nice', [
+      '-n', '19', 'ffmpeg', '-y', '-i', sourcePath,
+      '-vf', "scale='min(1080,iw)':'min(1920,ih)':force_original_aspect_ratio=decrease",
+      '-c:v', 'libx264', '-preset', 'medium', '-crf', '23',
+      '-maxrate', '2500k', '-bufsize', '5000k', '-pix_fmt', 'yuv420p',
+      '-c:a', 'aac', '-b:a', '128k',
+      '-movflags', '+faststart',
+      videoTmpPath
+    ], { timeout: 5 * 60_000, maxBuffer: 10 * 1024 * 1024 });
+    fs.renameSync(videoTmpPath, videoFinalPath);
+
+    // 3. Real duration + stream sanity check via ffprobe on the transcoded
+    // output. This is a hard gate, not just a data-quality nicety: a file
+    // that two concurrent ffmpeg processes both wrote to (e.g. a one-off
+    // script racing the sweep) can rename "successfully" while actually
+    // being a corrupt, streamless mp4 — ffprobe is the only thing that
+    // catches that before it gets marked ready.
+    const { stdout } = await execFileAsync('ffprobe', [
+      '-v', 'error', '-show_entries', 'format=duration,nb_streams',
+      '-of', 'default=noprint_wrappers=1', videoFinalPath
+    ], { timeout: 30_000 });
+    // Parsed by key, not position — ffprobe's own field order doesn't match
+    // the order requested in -show_entries.
+    const durMatch = stdout.match(/duration=([\d.]+)/);
+    const streamsMatch = stdout.match(/nb_streams=(\d+)/);
+    const duration = durMatch ? Math.round(parseFloat(durMatch[1])) : NaN;
+    const nbStreams = streamsMatch ? parseInt(streamsMatch[1], 10) : NaN;
+    if (!Number.isFinite(duration) || duration <= 0 || !Number.isFinite(nbStreams) || nbStreams <= 0) {
+      throw new Error(`transcoded output failed validation (raw ffprobe output: ${stdout.trim().replace(/\n/g, ' ')})`);
+    }
+
+    // Original is deleted only once the compressed output is confirmed
+    // valid above — video_url is repointed to the compressed file so every
+    // existing reference to it keeps working with no fallback needed.
+    const compressedUrl = `/api/uploads/${videoFilename}`;
+    const originalSize = fs.statSync(sourcePath).size;
+    const compressedSize = fs.statSync(videoFinalPath).size;
+
+    await pool.query(
+      `UPDATE "Reel" SET compressed_video_url = $1, video_url = $1, duration = $2 WHERE id = $3`,
+      [compressedUrl, duration, reel.id]
+    );
+
+    let deleted = true;
+    try { fs.unlinkSync(sourcePath); } catch (unlinkError) {
+      deleted = false;
+      console.warn(`⚠️ [ReelTranscode] Could not delete original for reel ${reel.id}:`, unlinkError.message);
+    }
+
+    const pct = ((1 - compressedSize / originalSize) * 100).toFixed(1);
+    console.log(`✅ [ReelTranscode] Reel ${reel.id}: ${(originalSize / 1024 / 1024).toFixed(1)}MB -> ${(compressedSize / 1024 / 1024).toFixed(1)}MB (-${pct}%)${deleted ? ', original deleted' : ', ⚠️ original NOT deleted'}`);
+  } catch (error) {
+    console.error(`❌ [ReelTranscode] Failed for reel ${reel.id}:`, error.message);
+    for (const tmp of [videoTmpPath, posterTmpPath]) {
+      try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch {}
+    }
+    // Release the claim so a later sweep can retry — otherwise this row
+    // stays stuck on the '' sentinel forever (never NULL, never a real URL).
+    try {
+      await pool.query(`UPDATE "Reel" SET compressed_video_url = NULL WHERE id = $1 AND compressed_video_url = ''`, [reel.id]);
+    } catch {}
+  } finally {
+    reelTranscodeInProgress = false;
+  }
+}
+
+// Durability backstop for transcodeReel(): the fire-and-forget call on reel
+// creation is a "do it now" optimization, not the only mechanism — a
+// mid-transcode crash/redeploy would otherwise leave a reel silently
+// uncompressed forever. This also naturally works through the one-time
+// backfill of pre-existing reels in the background over time.
+async function sweepUntranscodedReels() {
+  try {
+    if (reelTranscodeInProgress) return;
+    const { rows } = await pool.query(
+      `SELECT * FROM "Reel" WHERE compressed_video_url IS NULL ORDER BY created_date ASC LIMIT 1`
+    );
+    if (rows.length === 0) return;
+    await transcodeReel(rows[0]);
+  } catch (error) {
+    // runMigrations() runs unawaited at startup (existing pattern, not new to
+    // this job) — the very first sweep call can race it and fire before the
+    // compressed_video_url column exists yet. Harmless: the next scheduled
+    // sweep (10 min later) runs fine once migrations have long since finished.
+    if (error.message.includes('compressed_video_url') && error.message.includes('does not exist')) return;
+    console.error('❌ [ReelTranscodeSweep] Error:', error.message);
   }
 }
 
@@ -1456,6 +1619,15 @@ async function runMigrations() {
     try {
       await pool.query(`ALTER TABLE "UserProfile" ADD COLUMN IF NOT EXISTS avatar_thumb_url TEXT`);
     } catch (e) { console.warn('⚠️ avatar_thumb_url migration note:', e.message); }
+
+    // Compressed, faststart-enabled variant of a reel's video_url plus a poster
+    // frame, generated server-side (see transcodeReel) — video_url itself is
+    // left untouched. Presence of compressed_video_url signals "ready", same
+    // pattern as avatar_thumb_url above (no separate status column).
+    try {
+      await pool.query(`ALTER TABLE "Reel" ADD COLUMN IF NOT EXISTS compressed_video_url TEXT`);
+      await pool.query(`ALTER TABLE "Reel" ADD COLUMN IF NOT EXISTS thumbnail_url TEXT`);
+    } catch (e) { console.warn('⚠️ Reel compressed_video_url/thumbnail_url migration note:', e.message); }
 
     // Heal access-code subscriptions that have no end_date (they would never expire).
     // Set end_date to 1 month after start_date (or 1 month from now if start_date is missing).
@@ -3096,6 +3268,13 @@ app.post('/api/entities/:table', authenticateUser, async (req, res) => {
           linkUrl: `/Reels?reelId=${encodeURIComponent(reel.id)}`,
         });
       })().catch(err => console.error('❌ [Notification:Reel]', err.message));
+
+      // Fire-and-forget: compress the raw upload + generate a poster frame.
+      // The uploader sees their reel immediately (still pointing at video_url);
+      // compressed_video_url/thumbnail_url populate a short while later. The
+      // sweep job below is the backstop if this specific call gets dropped
+      // (e.g. a redeploy mid-transcode).
+      transcodeReel(reel).catch(err => console.error('❌ [ReelTranscode:onCreate]', err.message));
     }
 
     res.json(result.rows[0]);
@@ -3721,6 +3900,48 @@ app.get('/api/map/nearby-profiles', authenticateUser, async (req, res) => {
     res.json(result.rows);
   } catch (error) {
     console.error('❌ [map/nearby-profiles] Error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Trimmed, purpose-built lookup for the small number of profiles the Reels
+// feed needs to label its authors — deliberately a new endpoint rather than
+// a change to the generic UserProfile filter endpoint (which only supports
+// exact-match equality and other features rely on with full-column
+// expectations), same reasoning as /api/map/nearby-profiles above.
+app.post('/api/reels/author-profiles', authenticateUser, async (req, res) => {
+  try {
+    const emails = Array.isArray(req.body?.emails) ? req.body.emails.filter(Boolean) : [];
+    if (emails.length === 0) return res.json([]);
+
+    const result = await pool.query(
+      `SELECT user_email, display_name, avatar_url, avatar_thumb_url, city, state
+       FROM "UserProfile" WHERE user_email = ANY($1::text[])`,
+      [emails]
+    );
+    res.json(result.rows);
+  } catch (error) {
+    console.error('❌ [reels/author-profiles] Error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Atomic view-count increment — the generic PUT /api/entities/:table/:id
+// handler can only set a column to a literal value sent by the client, which
+// can't express "views = views + 1" and forces the client to compute the new
+// value from a possibly-stale read (a real lost-update race under concurrent
+// viewers). This is intentionally its own endpoint rather than a special
+// case bolted onto the shared generic handler.
+app.post('/api/reels/:id/view', authenticateUser, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `UPDATE "Reel" SET views = views + 1 WHERE id = $1 RETURNING views`,
+      [req.params.id]
+    );
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Reel not found' });
+    res.json({ views: result.rows[0].views });
+  } catch (error) {
+    console.error('❌ [reels/:id/view] Error:', error.message);
     res.status(500).json({ error: error.message });
   }
 });
@@ -6469,6 +6690,12 @@ const server = app.listen(PORT, async () => {
   // Auto pop-down: clean up abandoned-account entries immediately on boot, then once a day.
   cleanupStalePopups();
   setInterval(cleanupStalePopups, 24 * 60 * 60 * 1000);
+
+  // Backstop for transcodeReel(): catch any reel whose fire-and-forget
+  // transcode on creation got dropped, and (slowly, safely) work through
+  // the pre-existing backlog of reels created before this pipeline existed.
+  sweepUntranscodedReels();
+  setInterval(sweepUntranscodedReels, 10 * 60 * 1000);
 });
 
 // Also listen on port 3000 so the frontend and /api/uploads/ are served from the same origin
