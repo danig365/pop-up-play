@@ -69,8 +69,6 @@ export default function Login() {
     setError('');
     setIsLoading(true);
     try {
-      console.log('[DEBUG GoogleAuth] Google login initiated');
-
       if (!credentialResponse?.code) {
         throw new Error('Google authorization code was not received.');
       }
@@ -91,8 +89,7 @@ export default function Login() {
 
       const data = await response.json();
       const { token, ...user } = data;
-      console.log('[GoogleAuth] Google auth successful:', user.email);
-      
+
       // Save user and JWT token via the auth module
       base44.auth.saveAuth(user, token);
       
@@ -100,10 +97,8 @@ export default function Login() {
       await checkUserAuth();
       
       if (user.is_new_user) {
-        console.log('[DEBUG GoogleAuth] 🔄 New user — navigating to Profile...');
         navigate(createPageUrl('Profile'));
       } else {
-        console.log('[DEBUG GoogleAuth] 🔄 Existing user — navigating to Home...');
         navigate(createPageUrl('Home'));
       }
     } catch (err) {

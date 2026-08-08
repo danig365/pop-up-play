@@ -296,8 +296,6 @@ export default function Profile() {
           Object.entries(formData).filter(([key]) => validFields.includes(key))
         );
         
-        console.log('📝 Saving profile with data:', data);
-        
         // Always check for existing profile to handle race conditions
         const existingProfiles = await base44.entities.UserProfile.filter({ user_email: user.email });
         

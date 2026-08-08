@@ -31,13 +31,8 @@ export default function ForgotPassword() {
 
     setIsLoading(true);
     try {
-      console.log('[DEBUG ForgotPassword] 📝 handleResetPassword started');
-      console.log('[DEBUG ForgotPassword] Email:', email);
-
       // Call forgot password endpoint
-      console.log('[DEBUG ForgotPassword] Calling base44.auth.forgotPassword()...');
       await base44.auth.forgotPassword(email);
-      console.log('[DEBUG ForgotPassword] ✅ Password reset email sent');
 
       setSuccessMessage('Check your email for password reset instructions');
       setEmail('');

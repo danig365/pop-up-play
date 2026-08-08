@@ -21,7 +21,6 @@ const LocationService = React.forwardRef(function LocationService({ onLocationUp
 
     try {
       const locationInfo = await requestCurrentLocation();
-      console.log('✅ Location acquired:', locationInfo);
       setLocationData(locationInfo);
       setStatus('success');
       onLocationUpdate?.(locationInfo);

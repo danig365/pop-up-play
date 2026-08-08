@@ -1,18 +1,21 @@
 // @ts-nocheck
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useMemo, useState, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { base44 } from '@/api/base44Client';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { useNavigate } from 'react-router-dom';
 import { Phone, PhoneOff } from 'lucide-react';
+import { subscribeToVideoSignals, useVideoSignalSocketConnected } from '@/lib/videoSignalSocket';
 
 export default function IncomingCallDetector({ user, isCallActive = false }) {
   const [incomingCall, setIncomingCall] = useState(null);
   const [isOpen, setIsOpen] = useState(false);
   const [handledCallIds, setHandledCallIds] = useState(new Set());
+  const [pushedSignals, setPushedSignals] = useState([]);
   const acceptedCallIdRef = useRef(null); // Track which call was accepted to prevent signal deletion
   const ringAudioRef = useRef(null);
   const navigate = useNavigate();
+  const socketConnected = useVideoSignalSocketConnected();
 
   // When navigating to VideoCall page, close any open dialog so it doesn't show on top of the call UI
   useEffect(() => {
@@ -49,91 +52,90 @@ export default function IncomingCallDetector({ user, isCallActive = false }) {
     }
   }, [isOpen]);
 
-  console.log('[IncomingCallDetector] Rendering with userEmail:', userEmail);
-
   // Poll for incoming call signals
   const { data: incomingSignals = [] } = useQuery({
     queryKey: ['incomingCalls', userEmail],
     queryFn: async () => {
-      console.log('📱 [IncomingCallDetector] Polling for incoming calls...');
       if (!userEmail) return [];
       try {
         const signals = await base44.entities.VideoSignal.filter({
           to_email: userEmail,
           signal_type: 'offer'
         });
-        console.log(`   Found ${signals.length} offer signal(s)`);
-        if (signals.length > 0) {
-          console.log('   Signals:', signals.map(s => ({
-            id: s.id.substring(0, 8),
-            from: s.from_email,
-            callId: s.call_id
-          })));
-        }
         return signals;
       } catch (error) {
         console.error('❌ [IncomingCallDetector] Error checking for incoming calls:', error);
         return [];
       }
     },
-    enabled: !!userEmail,
+    // Paused while a call is already active (VideoCall.jsx runs its own
+    // poll for the current call) or while the WS socket is connected — the
+    // socket delivers offers instantly (see subscribeToVideoSignals below),
+    // so this poll becomes a fallback for whenever it isn't connected
+    // rather than the primary mechanism.
+    enabled: !!userEmail && !isCallActive && !socketConnected,
     refetchInterval: 1000, // Check every second
   });
 
+  // Real-time push path — see src/lib/videoSignalSocket.js. Feeds the exact
+  // same detection effect below as the REST poll; only the source differs.
   useEffect(() => {
-    console.log('📱 [IncomingCallDetector] Signal state changed');
-    
+    if (!userEmail) return;
+    const unsubscribe = subscribeToVideoSignals((msg) => {
+      const signal = msg?.type === 'video_signal' ? msg.signal : null;
+      if (!signal || signal.signal_type !== 'offer' || signal.to_email !== userEmail) return;
+      setPushedSignals(prev => prev.some(s => s.id === signal.id) ? prev : [...prev, signal]);
+    });
+    return unsubscribe;
+  }, [userEmail]);
+
+  // Memoized so this only changes reference when its actual contents
+  // change — an inline array literal here would give the effect below a
+  // "new" array on every render and re-run it constantly.
+  const allSignals = useMemo(() => {
+    if (!incomingSignals.length && !pushedSignals.length) return incomingSignals;
+    return [...incomingSignals, ...pushedSignals.filter(p => !incomingSignals.some(s => s.id === p.id))];
+  }, [incomingSignals, pushedSignals]);
+
+  useEffect(() => {
     // Only show notification if there are new unhandled signals
-    if (incomingSignals.length > 0 && !incomingCall) {
+    if (allSignals.length > 0 && !incomingCall) {
       const now = Date.now();
       const MAX_SIGNAL_AGE_MS = 60000; // 60 seconds - ignore stale offers
 
       // Get the most recent call that hasn't been handled yet and isn't stale
-      const unhandledCalls = incomingSignals.filter(call => {
+      const unhandledCalls = allSignals.filter(call => {
         if (handledCallIds.has(call.id)) return false;
         // Ignore stale signals older than 60 seconds to prevent ghost notifications
         const signalAge = now - new Date(call.created_date).getTime();
         if (signalAge > MAX_SIGNAL_AGE_MS) {
-          console.log(`   🗑️ Ignoring stale signal (${Math.round(signalAge / 1000)}s old):`, call.id.substring(0, 8));
           // Clean up the stale signal from DB
           base44.entities.VideoSignal.delete(call.id).catch(() => {});
           return false;
         }
         return true;
       });
-      
-      console.log(`   Total signals: ${incomingSignals.length}, Unhandled: ${unhandledCalls.length}, Handled: ${handledCallIds.size}`);
-      
+
       if (unhandledCalls.length > 0) {
         const latestCall = unhandledCalls[unhandledCalls.length - 1];
-        
-        console.log('📞 [IncomingCallDetector] NEW INCOMING CALL DETECTED!');
-        console.log('   From:', latestCall.from_email);
-        console.log('   Call ID:', latestCall.call_id);
-        console.log('   Signal ID:', latestCall.id.substring(0, 8));
 
         // Don't open the dialog if the user is already on an active call
         if (isCallActive) {
-          console.log('   ⏸️ Suppressing popup — user is currently on a call');
           return;
         }
         setIncomingCall(latestCall);
         setIsOpen(true);
       }
     }
-  }, [incomingSignals, incomingCall, handledCallIds]);
+  }, [allSignals, incomingCall, handledCallIds]);
 
   const handleAcceptCall = async () => {
     if (incomingCall) {
-      console.log('✅ [IncomingCallDetector] ACCEPT button clicked');
       // Stop ring sound
       if (ringAudioRef.current) {
         ringAudioRef.current.pause();
         ringAudioRef.current.currentTime = 0;
       }
-      console.log('   From:', incomingCall.from_email);
-      console.log('   Call ID:', incomingCall.call_id);
-      console.log('   Navigating to VideoCall page...');
 
       // Save the offer SDP data before deleting the signal
       const offerSignalData = incomingCall.signal_data;
@@ -146,9 +148,8 @@ export default function IncomingCallDetector({ user, isCallActive = false }) {
       // Delete the offer signal from DB immediately to prevent stale ghost notifications
       try {
         await base44.entities.VideoSignal.delete(incomingCall.id);
-        console.log('   ✅ Offer signal deleted from DB');
-      } catch (err) {
-        console.log('   ⚠️ Could not delete offer signal:', err.message);
+      } catch {
+        // Already deleted — fine.
       }
 
       setIsOpen(false);
@@ -162,28 +163,21 @@ export default function IncomingCallDetector({ user, isCallActive = false }) {
   const handleDeclineCall = async () => {
     if (incomingCall) {
       try {
-        console.log('❌ [IncomingCallDetector] DECLINE button clicked');
         // Stop ring sound
         if (ringAudioRef.current) {
           ringAudioRef.current.pause();
           ringAudioRef.current.currentTime = 0;
         }
-        console.log('   From:', incomingCall.from_email);
-        console.log('   Call ID:', incomingCall.call_id);
-        console.log('   Signal ID:', incomingCall.id.substring(0, 8));
         // Mark this call as handled immediately to prevent re-showing
         setHandledCallIds(prev => new Set([...prev, incomingCall.id]));
-        
+
         // Delete the offer signal to clean up
         try {
-          console.log('   Deleting offer signal from DB...');
           await base44.entities.VideoSignal.delete(incomingCall.id);
-          console.log('   ✅ Offer signal deleted');
-        } catch (err) {
-          console.log('   Signal already deleted or error:', err.message);
+        } catch {
+          // Already deleted — fine.
         }
         // Send decline signal
-        console.log('   Sending decline signal...');
         await base44.entities.VideoSignal.create({
           call_id: incomingCall.call_id,
           from_email: userEmail,
@@ -191,7 +185,6 @@ export default function IncomingCallDetector({ user, isCallActive = false }) {
           signal_type: 'decline',
           signal_data: JSON.stringify({})
         });
-        console.log('   ✅ Decline signal sent');
       } catch (error) {
         console.error('❌ [IncomingCallDetector] Error declining call:', error);
       }
@@ -203,14 +196,11 @@ export default function IncomingCallDetector({ user, isCallActive = false }) {
   // Dialog close handler - don't delete signals here, only in handleDeclineCall
   const handleDialogOpenChange = async (open) => {
     if (!open && incomingCall) {
-      console.log('🔔 [IncomingCallDetector] Dialog closed');
       // Stop ring sound
       if (ringAudioRef.current) {
         ringAudioRef.current.pause();
         ringAudioRef.current.currentTime = 0;
       }
-      console.log('   Call from:', incomingCall.from_email);
-      console.log('   Note: Signal will be deleted only if user explicitly declined');
       // Clear the accepted ref
       acceptedCallIdRef.current = null;
       setIncomingCall(null);

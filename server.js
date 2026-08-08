@@ -20,6 +20,7 @@ import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { AccessToken } from 'livekit-server-sdk';
+import { WebSocketServer } from 'ws';
 
 dotenv.config();
 
@@ -111,6 +112,26 @@ function verifyToken(token) {
     return jwt.verify(token, JWT_SECRET);
   } catch {
     return null;
+  }
+}
+
+// In-memory registry of live /ws connections, keyed by user email — lets
+// VideoSignal creates push instantly instead of the client waiting for its
+// next poll tick. Single Node process (matches every other in-memory
+// pattern in this file, e.g. reelTranscodeInProgress). One socket per
+// email (last-connected wins) — the client still falls back to its
+// existing REST poll whenever it isn't connected, so this is purely an
+// additive fast path, never a required one.
+const videoSignalSockets = new Map();
+
+function pushVideoSignal(toEmail, signalRow) {
+  const ws = videoSignalSockets.get(toEmail);
+  if (ws && ws.readyState === ws.OPEN) {
+    try {
+      ws.send(JSON.stringify({ type: 'video_signal', signal: signalRow }));
+    } catch (err) {
+      console.error(`❌ [VideoSignalPush] Failed to send to ${toEmail}:`, err.message);
+    }
   }
 }
 
@@ -611,6 +632,27 @@ async function sweepUntranscodedReels() {
     // sweep (10 min later) runs fine once migrations have long since finished.
     if (error.message.includes('compressed_video_url') && error.message.includes('does not exist')) return;
     console.error('❌ [ReelTranscodeSweep] Error:', error.message);
+  }
+}
+
+// VideoSignal rows are meant to be near-instant WebRTC signaling messages
+// (offer/answer/ICE candidates), normally deleted within a second or two of
+// being processed. When a call is abandoned mid-handshake (crash, lost
+// network, force-closed app) nothing else ever cleans up the signals left
+// addressed to the other party — confirmed live: production had rows over
+// 3 months old, and a stale unprocessed offer can silently break the Accept
+// flow for a genuinely new incoming call. A flat TTL across every signal
+// type is the backstop for exactly that case.
+async function sweepStaleVideoSignals() {
+  try {
+    const result = await pool.query(
+      `DELETE FROM "VideoSignal" WHERE created_date < NOW() - INTERVAL '5 minutes'`
+    );
+    if (result.rowCount > 0) {
+      console.log(`ℹ️ [VideoSignalSweep] Deleted ${result.rowCount} stale/orphaned signal(s)`);
+    }
+  } catch (error) {
+    console.error('❌ [VideoSignalSweep] Error:', error.message);
   }
 }
 
@@ -1647,6 +1689,20 @@ async function runMigrations() {
     } catch (e) {
       console.warn('⚠️ Access-code subscription heal migration note:', e.message);
     }
+
+    // Video signaling: every read pattern (to_email+signal_type from
+    // IncomingCallDetector, to_email+call_id from VideoCall) was a full table scan.
+    try {
+      await pool.query(`CREATE INDEX IF NOT EXISTS idx_videosignal_to_email_type ON "VideoSignal"(to_email, signal_type)`);
+      await pool.query(`CREATE INDEX IF NOT EXISTS idx_videosignal_to_email_callid ON "VideoSignal"(to_email, call_id)`);
+    } catch (e) { console.warn('⚠️ VideoSignal index migration note:', e.message); }
+
+    // Makes "at most one trial per user" actually true — the trial-creation
+    // INSERT below (see checkSubscriptionAccess) has a try/catch expecting a
+    // duplicate-key error that nothing previously enforced.
+    try {
+      await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_usersubscription_one_trial_per_user ON "UserSubscription"(user_email) WHERE status = 'trial'`);
+    } catch (e) { console.warn('⚠️ UserSubscription trial uniqueness migration note:', e.message); }
 
   } catch (error) {
     console.error('❌ Migration error:', error.message);
@@ -3089,12 +3145,6 @@ app.post('/api/entities/:table', authenticateUser, async (req, res) => {
     const { table } = req.params;
     const data = req.body;
 
-    // Debug: Log incoming request for entity creation
-    console.log('--- [DEBUG ENTITY CREATE] ---');
-    console.log('Table:', table);
-    console.log('Data:', JSON.stringify(data, null, 2));
-    console.log('-----------------------------');
-
     // Validate table name
         const validTables = ['User', 'UserProfile', 'UserSubscription', 'SubscriptionSettings', 
           'Message', 'AccessCode', 'AboutVideo', 'BlockedUser', 'BroadcastMessage', 'UserSession', 'VideoSignal', 'Reel', 'ProfileVideo', 'Event'];
@@ -3134,6 +3184,44 @@ app.post('/api/entities/:table', authenticateUser, async (req, res) => {
       data.user_email = req.authenticatedUser.email;
     }
 
+    // Gate call-initiation only (an 'offer' is what starts a new call) —
+    // the subscription paywall for Video Verify was previously enforced
+    // only client-side (guardAction() before navigating to /VideoCall),
+    // confirmed live to be bypassable by hitting this endpoint directly.
+    // Answers/ICE/end-call/decline for an already-permitted call are not
+    // re-checked, matching the existing client-side intent (only the
+    // caller's button click was ever gated).
+    if (table === 'VideoSignal' && data?.signal_type === 'offer') {
+      const callerEmail = req.authenticatedUser.email;
+      if (data.from_email !== callerEmail) {
+        return res.status(403).json({ error: 'Forbidden: from_email must match authenticated user' });
+      }
+
+      let access;
+      try {
+        access = await checkSubscriptionAccess(callerEmail);
+      } catch (err) {
+        // Fail open — consistent with every other subscription check in
+        // this codebase (see checkSubscriptionAccess's own callers).
+        console.error('❌ [VideoCallGate] Subscription check failed:', err.message);
+        access = { required: false, hasAccess: true, status: 'error' };
+      }
+      if (access.required && !access.hasAccess) {
+        return res.status(403).json({ error: 'Subscription required to make video calls', code: 'SUBSCRIPTION_REQUIRED' });
+      }
+
+      const blockResult = await pool.query(
+        `SELECT 1 FROM "BlockedUser"
+         WHERE (blocker_email = $1 AND blocked_email = $2)
+            OR (blocker_email = $2 AND blocked_email = $1)
+         LIMIT 1`,
+        [data.from_email, data.to_email]
+      );
+      if (blockResult.rows.length > 0) {
+        return res.status(403).json({ error: 'Cannot call this user', code: 'BLOCKED' });
+      }
+    }
+
     // Handle array columns for specific tables
     const arrayColumns = {
       'UserProfile': ['interests', 'photos', 'videos'],
@@ -3152,10 +3240,6 @@ app.post('/api/entities/:table', authenticateUser, async (req, res) => {
       return v;
     });
 
-    // Debug: Log columns and values
-    console.log('[DEBUG ENTITY CREATE] Columns:', columns);
-    console.log('[DEBUG ENTITY CREATE] Values:', values);
-
     // Build placeholders with type casting for array/jsonb columns
     const placeholders = columns.map((col, i) => {
       if (tableArrayColumns.includes(col)) return `$${i + 1}::text[]`;
@@ -3167,12 +3251,15 @@ app.post('/api/entities/:table', authenticateUser, async (req, res) => {
 
     const query = `INSERT INTO "${table}" (${columnList}) VALUES (${placeholders}) RETURNING *`;
 
-    // Debug: Log final query and values
-    console.log('[DEBUG ENTITY CREATE] Query:', query);
-    console.log('[DEBUG ENTITY CREATE] Query Values:', values);
-
     const result = await pool.query(query, values);
-    console.log('[DEBUG ENTITY CREATE] Success:', result.rows[0]);
+
+    // Push new signaling messages instantly over WebSocket if the recipient
+    // is connected — see pushVideoSignal(). REST create/filter/delete stay
+    // exactly as they are; this is purely an additional fast path, and the
+    // client's own polling remains a fallback for whenever it isn't connected.
+    if (table === 'VideoSignal' && result.rows[0]) {
+      pushVideoSignal(result.rows[0].to_email, result.rows[0]);
+    }
 
     // --- Auto-send email notification when a Message is created ---
     if (table === 'Message' && result.rows[0]) {
@@ -4867,193 +4954,231 @@ app.post('/api/profile/:email/view', authenticateUser, async (req, res) => {
 
 // ============ Subscription Status Endpoint ============
 
+// Core subscription-access decision for a given email — admin bypass,
+// subscription-disabled shortcut, trial creation, PayPal sync, expiry
+// checks. Extracted from the getSubscriptionStatus route below so the
+// VideoSignal offer-creation gate (see POST /api/entities/:table) can reuse
+// the exact same logic instead of duplicating it. Each caller keeps its own
+// try/catch — this function can throw, it does not fail open itself.
+async function checkSubscriptionAccess(userEmail) {
+  // Check if user is admin - admins bypass subscription requirements
+  const userResult = await pool.query(
+    `SELECT role FROM "User" WHERE email = $1`,
+    [userEmail]
+  );
+
+  if (userResult.rows.length > 0 && userResult.rows[0].role === 'admin') {
+    // Admin user - always has access
+    return {
+      required: false,
+      hasAccess: true,
+      status: 'admin'
+    };
+  }
+
+  // Get the most recently updated subscription settings
+  const settingsResult = await pool.query(
+    `SELECT * FROM "SubscriptionSettings"
+     ORDER BY updated_date DESC
+     LIMIT 1`
+  );
+
+  if (settingsResult.rows.length === 0 || !settingsResult.rows[0].subscription_enabled) {
+    // Subscription not enabled in settings
+    return {
+      required: false,
+      hasAccess: true,
+      status: 'subscription_disabled'
+    };
+  }
+
+  const setting = settingsResult.rows[0];
+
+  // Check user subscription
+  const subsResult = await pool.query(
+    `SELECT * FROM "UserSubscription"
+     WHERE user_email = $1
+     ORDER BY created_date DESC
+     LIMIT 1`,
+    [userEmail]
+  );
+
+  if (subsResult.rows.length === 0) {
+    // No subscription - check if trial is enabled
+    if (setting.free_trial_enabled) {
+      // Create trial subscription
+      const trialStart = new Date();
+      const trialEnd = new Date();
+      trialEnd.setDate(trialEnd.getDate() + (setting.trial_days || 30));
+
+      try {
+        await pool.query(
+          `INSERT INTO "UserSubscription"
+           (user_email, status, start_date, end_date)
+           VALUES ($1, $2, $3, $4)`,
+          [userEmail, 'trial', trialStart.toISOString(), trialEnd.toISOString()]
+        );
+      } catch (err) {
+        // Trial already exists (idx_usersubscription_one_trial_per_user), ignore duplicate
+      }
+
+      return {
+        required: true,
+        hasAccess: true,
+        status: 'trial',
+        trialEnd: trialEnd.toISOString()
+      };
+    } else {
+      // No subscription and no trial
+      return {
+        required: true,
+        hasAccess: false,
+        status: 'none'
+      };
+    }
+  }
+
+  const subscription = subsResult.rows[0];
+
+  if (subscription.paypal_subscription_id) {
+    try {
+      const paypalSub = await fetchPayPalSubscription(subscription.paypal_subscription_id);
+      const mappedStatus = mapPayPalSubscriptionStatus(paypalSub.status);
+      const endDate = paypalSub?.billing_info?.next_billing_time || subscription.end_date;
+
+      if (mappedStatus !== subscription.status || String(endDate || '') !== String(subscription.end_date || '')) {
+        await pool.query(
+          `UPDATE "UserSubscription"
+           SET status = $1,
+               end_date = $2,
+               updated_date = CURRENT_TIMESTAMP
+           WHERE id = $3`,
+          [mappedStatus, endDate, subscription.id]
+        );
+        subscription.status = mappedStatus;
+        subscription.end_date = endDate;
+      }
+    } catch (syncErr) {
+      console.warn('⚠️ [checkSubscriptionAccess] PayPal sync skipped:', syncErr.message);
+    }
+  }
+
+  // Check if subscription is active and not expired
+  if (subscription.status === 'active') {
+    const endDate = new Date(subscription.end_date);
+    const now = new Date();
+
+    if (now > endDate) {
+      // Subscription expired
+      await pool.query(
+        `UPDATE "UserSubscription" SET status = $1 WHERE id = $2`,
+        ['expired', subscription.id]
+      );
+      return {
+        required: true,
+        hasAccess: false,
+        status: 'expired',
+        endDate: subscription.end_date
+      };
+    }
+
+    // Active subscription
+    return {
+      required: true,
+      hasAccess: true,
+      status: 'active',
+      endDate: subscription.end_date
+    };
+  }
+
+  // Trial subscription
+  if (subscription.status === 'trial') {
+    const endDate = new Date(subscription.end_date);
+    const now = new Date();
+
+    if (now > endDate) {
+      // Trial expired
+      await pool.query(
+        `UPDATE "UserSubscription" SET status = $1 WHERE id = $2`,
+        ['expired', subscription.id]
+      );
+      return {
+        required: true,
+        hasAccess: false,
+        status: 'expired',
+        endDate: subscription.end_date
+      };
+    }
+
+    return {
+      required: true,
+      hasAccess: true,
+      status: 'trial',
+      endDate: subscription.end_date
+    };
+  }
+
+  if (subscription.status === 'pending') {
+    return {
+      required: true,
+      hasAccess: false,
+      status: 'pending',
+      endDate: subscription.end_date || null
+    };
+  }
+
+  // Any other status (inactive, expired, etc.)
+  return {
+    required: true,
+    hasAccess: false,
+    status: subscription.status || 'inactive'
+  };
+}
+
 // POST /api/functions/getSubscriptionStatus - Check user subscription status
 app.post('/api/functions/getSubscriptionStatus', authenticateUserStrict, async (req, res) => {
   try {
     const userEmail = String(req.authenticatedUser.email || '').trim().toLowerCase();
-
-    // Check if user is admin - admins bypass subscription requirements
-    const userResult = await pool.query(
-      `SELECT role FROM "User" WHERE email = $1`,
-      [userEmail]
-    );
-
-    if (userResult.rows.length > 0 && userResult.rows[0].role === 'admin') {
-      // Admin user - always has access
-      return res.json({ 
-        required: false,
-        hasAccess: true,
-        status: 'admin'
-      });
-    }
-
-    // Get the most recently updated subscription settings
-    const settingsResult = await pool.query(
-      `SELECT * FROM "SubscriptionSettings" 
-       ORDER BY updated_date DESC 
-       LIMIT 1`
-    );
-
-    if (settingsResult.rows.length === 0 || !settingsResult.rows[0].subscription_enabled) {
-      // Subscription not enabled in settings
-      return res.json({ 
-        required: false,
-        hasAccess: true,
-        status: 'subscription_disabled'
-      });
-    }
-
-    const setting = settingsResult.rows[0];
-
-    // Check user subscription
-    const subsResult = await pool.query(
-      `SELECT * FROM "UserSubscription" 
-       WHERE user_email = $1
-       ORDER BY created_date DESC
-       LIMIT 1`,
-      [userEmail]
-    );
-
-    if (subsResult.rows.length === 0) {
-      // No subscription - check if trial is enabled
-      if (setting.free_trial_enabled) {
-        // Create trial subscription
-        const trialStart = new Date();
-        const trialEnd = new Date();
-        trialEnd.setDate(trialEnd.getDate() + (setting.trial_days || 30));
-
-        try {
-          await pool.query(
-            `INSERT INTO "UserSubscription" 
-             (user_email, status, start_date, end_date)
-             VALUES ($1, $2, $3, $4)`,
-            [userEmail, 'trial', trialStart.toISOString(), trialEnd.toISOString()]
-          );
-        } catch (err) {
-          // Trial already exists, ignore duplicate
-        }
-
-        return res.json({
-          required: true,
-          hasAccess: true,
-          status: 'trial',
-          trialEnd: trialEnd.toISOString()
-        });
-      } else {
-        // No subscription and no trial
-        return res.json({
-          required: true,
-          hasAccess: false,
-          status: 'none'
-        });
-      }
-    }
-
-    const subscription = subsResult.rows[0];
-
-    if (subscription.paypal_subscription_id) {
-      try {
-        const paypalSub = await fetchPayPalSubscription(subscription.paypal_subscription_id);
-        const mappedStatus = mapPayPalSubscriptionStatus(paypalSub.status);
-        const endDate = paypalSub?.billing_info?.next_billing_time || subscription.end_date;
-
-        if (mappedStatus !== subscription.status || String(endDate || '') !== String(subscription.end_date || '')) {
-          await pool.query(
-            `UPDATE "UserSubscription"
-             SET status = $1,
-                 end_date = $2,
-                 updated_date = CURRENT_TIMESTAMP
-             WHERE id = $3`,
-            [mappedStatus, endDate, subscription.id]
-          );
-          subscription.status = mappedStatus;
-          subscription.end_date = endDate;
-        }
-      } catch (syncErr) {
-        console.warn('⚠️ [getSubscriptionStatus] PayPal sync skipped:', syncErr.message);
-      }
-    }
-
-    // Check if subscription is active and not expired
-    if (subscription.status === 'active') {
-      const endDate = new Date(subscription.end_date);
-      const now = new Date();
-
-      if (now > endDate) {
-        // Subscription expired
-        await pool.query(
-          `UPDATE "UserSubscription" SET status = $1 WHERE id = $2`,
-          ['expired', subscription.id]
-        );
-        return res.json({
-          required: true,
-          hasAccess: false,
-          status: 'expired',
-          endDate: subscription.end_date
-        });
-      }
-
-      // Active subscription
-      return res.json({
-        required: true,
-        hasAccess: true,
-        status: 'active',
-        endDate: subscription.end_date
-      });
-    }
-
-    // Trial subscription
-    if (subscription.status === 'trial') {
-      const endDate = new Date(subscription.end_date);
-      const now = new Date();
-
-      if (now > endDate) {
-        // Trial expired
-        await pool.query(
-          `UPDATE "UserSubscription" SET status = $1 WHERE id = $2`,
-          ['expired', subscription.id]
-        );
-        return res.json({
-          required: true,
-          hasAccess: false,
-          status: 'expired',
-          endDate: subscription.end_date
-        });
-      }
-
-      return res.json({
-        required: true,
-        hasAccess: true,
-        status: 'trial',
-        endDate: subscription.end_date
-      });
-    }
-
-    if (subscription.status === 'pending') {
-      return res.json({
-        required: true,
-        hasAccess: false,
-        status: 'pending',
-        endDate: subscription.end_date || null
-      });
-    }
-
-    // Any other status (inactive, expired, etc.)
-    return res.json({
-      required: true,
-      hasAccess: false,
-      status: subscription.status || 'inactive'
-    });
+    const result = await checkSubscriptionAccess(userEmail);
+    res.json(result);
   } catch (error) {
     console.error('❌ [getSubscriptionStatus] Error:', error.message);
     // Fail open - grant access on transient errors so paid users aren't locked out
-    res.status(500).json({ 
+    res.status(500).json({
       required: false,
       hasAccess: true,
       status: 'error',
       error: error.message
     });
   }
+});
+
+// ============ TURN Credentials (coturn REST API scheme) ============
+
+// POST /api/turn-credentials — short-lived (1hr) HMAC credentials for the
+// self-hosted coturn relay, used when STUN alone can't connect a call
+// (restrictive/carrier NATs). Deliberately NOT a static username/password:
+// anything baked into the public frontend bundle could be scraped and
+// abused as an open relay, so the client asks for a fresh credential right
+// before each call instead. See /etc/turnserver.conf's use-auth-secret.
+app.post('/api/turn-credentials', authenticateUser, (req, res) => {
+  const secret = process.env.TURN_SHARED_SECRET;
+  const host = process.env.TURN_SERVER_HOST;
+  if (!secret || !host) {
+    // TURN isn't configured — respond with no servers rather than erroring,
+    // so calls still work via STUN-only exactly as they did before this.
+    return res.json({ urls: [] });
+  }
+
+  const expiry = Math.floor(Date.now() / 1000) + 60 * 60; // 1 hour
+  const username = `${expiry}:${req.authenticatedUser.email}`;
+  const credential = crypto.createHmac('sha1', secret).update(username).digest('base64');
+
+  res.json({
+    urls: [`turn:${host}:3478`, `turn:${host}:3478?transport=tcp`],
+    username,
+    credential
+  });
 });
 
 // ============ Chat Message Email Notifications ============
@@ -6696,12 +6821,51 @@ const server = app.listen(PORT, async () => {
   // the pre-existing backlog of reels created before this pipeline existed.
   sweepUntranscodedReels();
   setInterval(sweepUntranscodedReels, 10 * 60 * 1000);
+
+  // Backstop for abandoned/interrupted video calls — see sweepStaleVideoSignals().
+  sweepStaleVideoSignals();
+  setInterval(sweepStaleVideoSignals, 5 * 60 * 1000);
 });
 
 // Also listen on port 3000 so the frontend and /api/uploads/ are served from the same origin
 const FRONTEND_PORT = 3000;
-if (Number(PORT) !== FRONTEND_PORT) {
-  app.listen(FRONTEND_PORT, () => {
-    console.log(`🌐 Frontend server on port ${FRONTEND_PORT}`);
+// nginx's `location /` block (proxied to this port) already forwards
+// Upgrade/Connection headers for a WebSocket handshake — the /api/ block
+// (port 3001, `server` above) does not, so /ws intentionally lives here
+// instead, needing zero nginx changes.
+const frontendServer = Number(PORT) !== FRONTEND_PORT
+  ? app.listen(FRONTEND_PORT, () => {
+      console.log(`🌐 Frontend server on port ${FRONTEND_PORT}`);
+    })
+  : server;
+
+const wss = new WebSocketServer({ server: frontendServer, path: '/ws' });
+wss.on('connection', (ws, req) => {
+  let email = null;
+  try {
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    const token = url.searchParams.get('token');
+    const decoded = token ? verifyToken(token) : null;
+    email = decoded?.email ? String(decoded.email).trim().toLowerCase() : null;
+  } catch {
+    email = null;
+  }
+
+  if (!email) {
+    ws.close(4001, 'unauthorized');
+    return;
+  }
+
+  videoSignalSockets.set(email, ws);
+  console.log(`🔌 [VideoSignalWS] Connected: ${email} (${videoSignalSockets.size} total)`);
+
+  ws.on('close', () => {
+    if (videoSignalSockets.get(email) === ws) {
+      videoSignalSockets.delete(email);
+    }
+    console.log(`🔌 [VideoSignalWS] Disconnected: ${email} (${videoSignalSockets.size} total)`);
   });
-}
+  ws.on('error', (err) => {
+    console.error(`❌ [VideoSignalWS] Socket error for ${email}:`, err.message);
+  });
+});

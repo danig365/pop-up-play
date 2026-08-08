@@ -86,13 +86,11 @@ export default function InactivityManager() {
           queryClient.invalidateQueries({ queryKey: ['activeUsers'] });
           setShowWarning(false);
           warningShownRef.current = false;
-          console.log('⏰ [InactivityManager] Auto pop-down after 24 hours of inactivity');
         } else if (inactiveTime >= INACTIVITY_MS - WARNING_MS && !warningShownRef.current) {
           warningShownRef.current = true;
           setShowWarning(true);
           const remaining = Math.ceil((INACTIVITY_MS - inactiveTime) / 1000);
           setTimeRemaining(remaining);
-          console.log('⚠️ [InactivityManager] Warning: popup will expire in', remaining, 'seconds');
         } else if (showWarning) {
           const remaining = Math.ceil((INACTIVITY_MS - inactiveTime) / 1000);
           setTimeRemaining(Math.max(0, remaining));

@@ -57,12 +57,8 @@ export default function ResetPassword() {
 
     setIsLoading(true);
     try {
-      console.log('[DEBUG ResetPassword] 📝 handleResetPassword started');
-
       // Call reset password endpoint
-      console.log('[DEBUG ResetPassword] Calling base44.auth.resetPassword()...');
       await base44.auth.resetPassword(token, newPassword);
-      console.log('[DEBUG ResetPassword] ✅ Password reset successful');
 
       setSuccessMessage('Your password has been reset successfully! Redirecting to login...');
       setNewPassword('');

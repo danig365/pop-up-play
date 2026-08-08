@@ -49,10 +49,6 @@ export default function AccessCodeManager() {
       const validUntil = new Date();
       validUntil.setDate(validUntil.getDate() + parsedDays);
       
-      console.log('📝 [AccessCodeManager] Generating code:', code);
-      console.log('📝 [AccessCodeManager] Valid until:', validUntil.toISOString());
-      console.log('📝 [AccessCodeManager] Created by:', user.email);
-      
       const result = await base44.entities.AccessCode.create({
         code,
         valid_until: validUntil.toISOString(),
@@ -60,7 +56,6 @@ export default function AccessCodeManager() {
         is_used: false
       });
       
-      console.log('✅ [AccessCodeManager] Code created:', result);
       return result;
     },
     onSuccess: () => {

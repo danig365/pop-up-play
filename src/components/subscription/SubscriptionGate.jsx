@@ -27,7 +27,6 @@ export default function SubscriptionGate({ children }) {
     queryFn: async () => {
       try {
         const response = await base44.functions.invoke('getSubscriptionStatus', {});
-        console.log('✅ Subscription status:', response);
         // Return the response directly, or provide default values
         return response || { is_active: false, status: 'inactive', hasAccess: false, required: false };
       } catch (err) {
@@ -43,7 +42,6 @@ export default function SubscriptionGate({ children }) {
   useEffect(() => {
     if (status) {
       setChecking(false);
-      console.log('🔐 SubscriptionGate check:', { required: status.required, hasAccess: status.hasAccess, currentPath: window.location.hash });
       // If subscription is required but user doesn't have access
       if (status.required && !status.hasAccess) {
         console.warn('⛔ User denied access - redirecting to Pricing');

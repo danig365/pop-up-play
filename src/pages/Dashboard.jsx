@@ -178,14 +178,10 @@ export default function Dashboard() {
   };
 
   const handleLogout = async () => {
-    console.log('🔄 [Dashboard.handleLogout] Logout button clicked');
     try {
-      console.log('🔄 [Dashboard.handleLogout] Calling base44.auth.logout()...');
       await base44.auth.logout();
-      console.log('✅ [Dashboard.handleLogout] Logout completed');
     } catch (error) {
       console.error('❌ [Dashboard.handleLogout] Logout failed:', error);
-      console.log('🔄 [Dashboard.handleLogout] Forcing redirect...');
       window.location.href = window.location.origin;
     }
   };

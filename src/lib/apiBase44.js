@@ -217,7 +217,6 @@ class APIIntegrations {
       };
     },
     SendEmail: async (config) => {
-      console.log('Email sent via API:', config);
       return { success: true };
     },
   };
@@ -226,8 +225,6 @@ class APIIntegrations {
 // Functions/Lambdas via API
 class APIFunctions {
   async invoke(functionName, params = {}) {
-    console.log(`📢 [APIFunctions] Function invoked: ${functionName}`, params);
-    
     // Simulate different function responses
     switch (functionName) {
       case 'createCheckout':
@@ -236,7 +233,6 @@ class APIFunctions {
           session_id: 'session_' + Math.random().toString(36).substr(2, 9),
         };
       case 'sendBroadcast':
-        console.log('📢 [APIFunctions] sendBroadcast - Creating broadcast message...');
         // Return mock data that matches what the component expects
         return { 
           success: true, 
@@ -571,7 +567,6 @@ class APIAuth {
 // Logs with API
 class APIAppLogs {
   async logUserInApp(pageName) {
-    console.log(`User activity logged: ${pageName}`);
     return { success: true };
   }
 }

@@ -63,7 +63,6 @@ class MockIntegrations {
       });
     },
     SendEmail: async (config) => {
-      console.log('Email sent (mock):', config);
       return { success: true };
     },
   };
@@ -72,8 +71,6 @@ class MockIntegrations {
 // Functions/Lambdas mock
 class MockFunctions {
   async invoke(functionName, params = {}) {
-    console.log(`Function invoked (mock): ${functionName}`, params);
-    
     // Simulate different function responses
     switch (functionName) {
       case 'createCheckout':
@@ -96,7 +93,6 @@ class MockFunctions {
 // Logs mock
 class MockAppLogs {
   async logUserInApp(pageName) {
-    console.log(`User activity logged (mock): ${pageName}`);
     return { success: true };
   }
 }

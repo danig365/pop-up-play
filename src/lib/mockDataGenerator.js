@@ -160,6 +160,4 @@ export function seedMockData() {
     description: 'Learn about all the amazing features',
     order: 2,
   });
-
-  console.log('✅ Mock data seeded successfully');
 }

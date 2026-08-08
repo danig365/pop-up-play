@@ -18,7 +18,6 @@ export const initializeAnalytics = () => {
 
   try {
     ReactGA.initialize(GA_MEASUREMENT_ID);
-    console.log('Google Analytics initialized with ID:', GA_MEASUREMENT_ID);
   } catch (error) {
     console.error('Failed to initialize Google Analytics:', error);
   }

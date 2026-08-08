@@ -1,5 +1,5 @@
 // @ts-nocheck
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { base44 } from '@/api/base44Client';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
@@ -8,6 +8,18 @@ import { Button } from '@/components/ui/button';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { createPageUrl } from '@/utils';
 import { toast } from 'sonner';
+import { subscribeToVideoSignals, useVideoSignalSocketConnected } from '@/lib/videoSignalSocket';
+import { getApiBaseUrl } from '@/lib/apiUrl';
+
+const API_BASE_URL = getApiBaseUrl();
+
+function getAuthHeaders(extra = {}) {
+  const token = localStorage.getItem('popup_auth_token');
+  return {
+    ...extra,
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+}
 
 export default function VideoCall() {
   const [user, setUser] = useState(null);
@@ -45,7 +57,7 @@ export default function VideoCall() {
     const fromParam = params.get('from');
     const returnToParam = params.get('returnTo');
     const backToParam = params.get('backTo');
-    
+
     setOtherUserEmail(userParam);
     setIsReceiver(isReceiverParam === 'true');
 
@@ -58,7 +70,7 @@ export default function VideoCall() {
         return null;
       }
     };
-    
+
     // If callId is provided (receiver accepting a call), use it
     // Otherwise, generate a new one (caller initiating a call)
     if (callIdParam) {
@@ -66,7 +78,7 @@ export default function VideoCall() {
     } else {
       setCallId(`call_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`);
     }
-    
+
     // Set back URL based on where the call was initiated
     // returnTo = the Profile URL — always go back to Profile after video verify
     const profileReturnUrl = resolveProfileReturnUrl(returnToParam);
@@ -101,6 +113,8 @@ export default function VideoCall() {
     enabled: !!otherUserEmail
   });
 
+  const socketConnected = useVideoSignalSocketConnected();
+
   // Poll for signals
   const { data: signals = [] } = useQuery({
     queryKey: ['videoSignals', callId, user?.email],
@@ -111,22 +125,40 @@ export default function VideoCall() {
           to_email: user.email,
           call_id: callId
         }, '-created_date');
-        if (allSignals.length > 0) {
-          console.log(`📨 [VideoCall] Signal polling found ${allSignals.length} signal(s):`, allSignals.map(s => ({
-            id: s.id.substring(0, 8),
-            type: s.signal_type,
-            from: s.from_email
-          })));
-        }
         return allSignals;
       } catch (err) {
         console.error('❌ [VideoCall] Error polling for signals:', err);
         return [];
       }
     },
-    enabled: !!callId && !!user?.email && callStatus !== 'ended',
+    // Falls back to polling only while the real-time socket isn't
+    // connected — see the WS subscription and socketConnected below.
+    enabled: !!callId && !!user?.email && callStatus !== 'ended' && !socketConnected,
     refetchInterval: 1000
   });
+
+  // Real-time push path — see src/lib/videoSignalSocket.js. Every signal
+  // type for this call (offer/answer/ice-candidate/end-call/decline) can
+  // arrive this way; the processing effect below treats it identically to
+  // a polled signal.
+  const [pushedSignals, setPushedSignals] = useState([]);
+  useEffect(() => {
+    if (!callId || !user?.email) return;
+    const unsubscribe = subscribeToVideoSignals((msg) => {
+      const signal = msg?.type === 'video_signal' ? msg.signal : null;
+      if (!signal || signal.call_id !== callId || signal.to_email !== user.email) return;
+      setPushedSignals(prev => prev.some(s => s.id === signal.id) ? prev : [...prev, signal]);
+    });
+    return unsubscribe;
+  }, [callId, user?.email]);
+
+  // Memoized so polled + pushed signals only produce a new array reference
+  // when their actual contents change (an inline literal here would re-run
+  // the processing effect below on every render).
+  const combinedSignals = useMemo(() => {
+    if (!signals.length && !pushedSignals.length) return signals;
+    return [...signals, ...pushedSignals.filter(p => !signals.some(s => s.id === p.id))];
+  }, [signals, pushedSignals]);
 
   const sendSignalMutation = useMutation({
     mutationFn: async ({ signal_type, signal_data }) => {
@@ -152,27 +184,16 @@ export default function VideoCall() {
 
     const initWebRTC = async () => {
       try {
-        console.log('🎥 [VideoCall] WebRTC Initialization Starting');
-        console.log('   User:', user.email);
-        console.log('   Other User:', otherUserEmail);
-        console.log('   Call ID:', callId);
-        console.log('   Is Receiver:', isReceiver);
-        console.log('   Role:', isReceiver ? '📞 RECEIVER' : '☎️ CALLER');
-
         // Check if browser supports WebRTC
         if (!window.RTCPeerConnection) {
           throw new Error('WebRTC not supported in this browser');
         }
 
         // Get user media
-        console.log('🎤 [VideoCall] Requesting camera/microphone access...', { facingMode: cameraFacingMode });
         const stream = await navigator.mediaDevices.getUserMedia({
           video: { facingMode: { ideal: cameraFacingMode } },
           audio: true
         });
-        console.log('✅ [VideoCall] Camera/Microphone access granted');
-        console.log('   Video tracks:', stream.getVideoTracks().length);
-        console.log('   Audio tracks:', stream.getAudioTracks().length);
 
         localStreamRef.current = stream;
         if (localVideoRef.current) {
@@ -180,70 +201,70 @@ export default function VideoCall() {
         }
 
         // Create peer connection
-        console.log('🔗 [VideoCall] Creating RTCPeerConnection...');
-        const config = {
-          iceServers: [
+        const iceServers = [
           { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:stun1.l.google.com:19302' }]
+          { urls: 'stun:stun1.l.google.com:19302' }
+        ];
 
-        };
+        // TURN relay for restrictive/carrier NATs where STUN alone can't
+        // connect — short-lived credentials fetched fresh per call rather
+        // than a static one baked into this bundle. If unreachable, the
+        // call still proceeds STUN-only exactly as it did before this.
+        try {
+          const turnRes = await fetch(`${API_BASE_URL}/turn-credentials`, {
+            method: 'POST',
+            headers: getAuthHeaders(),
+          });
+          const turnData = await turnRes.json();
+          if (Array.isArray(turnData?.urls) && turnData.urls.length > 0) {
+            iceServers.push({ urls: turnData.urls, username: turnData.username, credential: turnData.credential });
+          }
+        } catch (turnErr) {
+          console.warn('⚠️ [VideoCall] TURN credentials unavailable, continuing STUN-only:', turnErr.message);
+        }
+
+        const config = { iceServers };
         const pc = new RTCPeerConnection(config);
         peerConnectionRef.current = pc;
-        console.log('✅ [VideoCall] RTCPeerConnection created');
 
         // Add local stream tracks to peer connection
         stream.getTracks().forEach((track) => {
           pc.addTrack(track, stream);
-          console.log(`   Added ${track.kind} track to peer connection`);
         });
 
         // Monitor connection state changes
         pc.onconnectionstatechange = () => {
-          console.log('🔄 [VideoCall] Connection State Changed:', pc.connectionState);
           if (pc.connectionState === 'connected') {
             setIsConnecting(false);
             setCallStatus('connected');
-            console.log('✅ [VideoCall] Call Status: CONNECTED (via connectionstatechange)');
             // Stop ringing sound when connected
             if (ringingAudioRef.current) {
               ringingAudioRef.current.pause();
               ringingAudioRef.current.currentTime = 0;
             }
           } else if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
-            console.log('❌ [VideoCall] Connection failed or disconnected');
             toast.error('Connection failed. Please try again.');
             setCallStatus('ended');
           }
         };
 
         pc.oniceconnectionstatechange = () => {
-          console.log('❄️ [VideoCall] ICE Connection State Changed:', pc.iceConnectionState);
           if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
             setIsConnecting(false);
             setCallStatus('connected');
-            console.log('✅ [VideoCall] Call Status: CONNECTED (via ICE)');
             // Stop ringing sound when connected
             if (ringingAudioRef.current) {
               ringingAudioRef.current.pause();
               ringingAudioRef.current.currentTime = 0;
             }
           } else if (pc.iceConnectionState === 'failed') {
-            console.log('❌ [VideoCall] ICE Connection failed');
             toast.error('Connection failed. Network issue detected.');
             setCallStatus('ended');
           }
         };
 
-        pc.onsignalingstatechange = () => {
-          console.log('📡 [VideoCall] Signaling State Changed:', pc.signalingState);
-        };
-
         // Handle incoming tracks
         pc.ontrack = (event) => {
-          console.log('📹 [VideoCall] Remote track received!');
-          console.log('   Track kind:', event.track.kind);
-          console.log('   Streams count:', event.streams.length);
-          
           if (event.streams[0]) {
             // Always save remote stream to ref for reconnection
             remoteStreamRef.current = event.streams[0];
@@ -252,8 +273,7 @@ export default function VideoCall() {
             }
             setIsConnecting(false);
             setCallStatus('connected');
-            console.log('✅ [VideoCall] Call Status: CONNECTED');
-            
+
             // Stop ringing sound when connected
             if (ringingAudioRef.current) {
               ringingAudioRef.current.pause();
@@ -265,71 +285,50 @@ export default function VideoCall() {
         // Handle ICE candidates
         pc.onicecandidate = (event) => {
           if (event.candidate) {
-            console.log('❄️ [VideoCall] ICE Candidate gathered:', {
-              protocol: event.candidate.protocol,
-              address: event.candidate.candidate.split(' ')[4],
-              priority: event.candidate.priority
-            });
             sendSignalMutation.mutate({
               signal_type: 'ice-candidate',
               signal_data: event.candidate
             });
-          } else {
-            console.log('❄️ [VideoCall] ICE Candidate gathering completed');
           }
         };
 
         // Only create and send offer if this is the CALLER
         // If this is a RECEIVER, they will receive the offer and send an answer
         if (!isReceiver) {
-          console.log('☎️ [VideoCall] CALLER MODE: Creating and sending OFFER...');
           try {
             const offer = await pc.createOffer();
             await pc.setLocalDescription(offer);
-            console.log('📤 [VideoCall] Sending OFFER signal', {
-              callId: callId,
-              type: 'offer',
-              sdpLength: offer.sdp.length
-            });
             await sendSignalMutation.mutateAsync({
               signal_type: 'offer',
               signal_data: offer
             });
-            console.log('✅ [VideoCall] OFFER signal successfully sent to database');
 
             setCallStatus('calling');
             setIsConnecting(false);
-            console.log('☎️ [VideoCall] Call Status: CALLING (waiting for answer)');
           } catch (err) {
             console.error('❌ [VideoCall] ERROR creating/sending OFFER:', err);
-            console.error('   Error message:', err.message);
-            console.error('   Error stack:', err.stack);
             setCallStatus('ended');
           }
-          
+
           // Play ringing sound only for caller
           if (ringingAudioRef.current) {
-            ringingAudioRef.current.play().catch(err => console.log('Audio play failed:', err));
+            ringingAudioRef.current.play().catch(() => {});
           }
         } else {
           // Receiver mode
           if (offerFromStateRef.current) {
             // Process offer immediately from state (passed by IncomingCallDetector)
-            console.log('📞 [VideoCall] RECEIVER MODE: Processing offer from state...');
             try {
               const offerData = JSON.parse(offerFromStateRef.current);
               await pc.setRemoteDescription(new RTCSessionDescription(offerData));
               remoteDescriptionSetRef.current = true;
-              console.log('   ✅ Remote description set from state offer');
 
               const answer = await pc.createAnswer();
               await pc.setLocalDescription(answer);
-              console.log('   📤 Sending ANSWER signal');
               await sendSignalMutation.mutateAsync({
                 signal_type: 'answer',
                 signal_data: answer
               });
-              console.log('   ✅ ANSWER sent successfully');
               setCallStatus('connecting');
               setIsConnecting(true);
             } catch (err) {
@@ -340,23 +339,20 @@ export default function VideoCall() {
             }
           } else {
             // No offer in state, wait for signal polling
-            console.log('📞 [VideoCall] RECEIVER MODE: Waiting for incoming OFFER...');
             setIsConnecting(true);
             setCallStatus('connecting');
           }
           // Play ringing sound for receiver while connecting
           if (ringingAudioRef.current) {
-            ringingAudioRef.current.play().catch(err => console.log('Audio play failed:', err));
+            ringingAudioRef.current.play().catch(() => {});
           }
         }
-        
+
         // Mark peer connection as ready for signal processing
         setPeerConnectionReady(true);
-        console.log('✅ [VideoCall] Peer connection setup complete, ready for signals');
       } catch (error) {
         console.error('❌ [VideoCall] Error initializing WebRTC:', error);
         const errorMsg = error?.message || 'Failed to access camera/microphone';
-        console.error('   Error Details:', errorMsg);
         toast.error(errorMsg);
         setCallStatus('ended');
       }
@@ -366,7 +362,8 @@ export default function VideoCall() {
     remoteDescriptionSetRef.current = false;
     pendingIceCandidatesRef.current = [];
     processedSignalsRef.current = new Set();
-    
+    setPushedSignals([]);
+
     initWebRTC();
 
     return () => {
@@ -393,6 +390,7 @@ export default function VideoCall() {
       processedSignalsRef.current = new Set();
       remoteStreamRef.current = null;
       setPeerConnectionReady(false);
+      setPushedSignals([]);
     };
   }, [user?.email, otherUserEmail, callId]);
 
@@ -409,196 +407,139 @@ export default function VideoCall() {
 
   // Handle incoming signals
   useEffect(() => {
-    console.log(`📊 [VideoCall] Signal handling effect triggered`, {
-      signalsLength: signals.length,
-      hasPeerConnection: !!peerConnectionRef.current,
-      peerConnectionReady: peerConnectionReady,
-      callStatus: callStatus
-    });
-    
     // Wait for peer connection to be fully initialized
-    if (!signals.length || !peerConnectionRef.current || !peerConnectionReady) {
-      if (signals.length === 0) {
-        console.log('   ⏳ Waiting for signals... (0 signals found)');
-      } else if (!peerConnectionReady) {
-        console.log('   ⏳ Peer connection not ready yet, waiting...');
-      }
+    if (!combinedSignals.length || !peerConnectionRef.current || !peerConnectionReady) {
       return;
     }
 
-    console.log(`📨 [VideoCall] Received ${signals.length} signal(s)`, signals.map(s => ({
-      id: s.id.substring(0, 8),
-      type: s.signal_type,
-      from: s.from_email,
-      to: s.to_email,
-      callId: s.call_id
-    })));
-
     const processSignals = async () => {
       // Sort signals to process offer/answer first, then ICE candidates
-      const sortedSignals = [...signals].sort((a, b) => {
+      const sortedSignals = [...combinedSignals].sort((a, b) => {
         const priority = { 'offer': 0, 'answer': 1, 'ice-candidate': 2, 'end-call': 3, 'decline': 3 };
         return (priority[a.signal_type] || 99) - (priority[b.signal_type] || 99);
       });
-      
+
       for (const signal of sortedSignals) {
         // Skip already processed signals
         if (processedSignalsRef.current.has(signal.id)) {
-          console.log(`   ⏭️ Skipping already processed signal: ${signal.id.substring(0, 8)}`);
           continue;
         }
-        
+
         // Mark signal as being processed
         processedSignalsRef.current.add(signal.id);
-        
+
         try {
           const data = JSON.parse(signal.signal_data);
 
           if (signal.signal_type === 'answer') {
-            console.log('📥 [VideoCall] ANSWER received from peer');
-            console.log('   Setting remote description...');
             await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(data));
             remoteDescriptionSetRef.current = true;
-            console.log('   ✅ Remote description set');
-            
+
             // Process any pending ICE candidates
             if (pendingIceCandidatesRef.current.length > 0) {
-              console.log(`   🧊 Processing ${pendingIceCandidatesRef.current.length} queued ICE candidates...`);
               for (const candidate of pendingIceCandidatesRef.current) {
                 try {
                   await peerConnectionRef.current.addIceCandidate(new RTCIceCandidate(candidate));
-                  console.log('   ✅ Queued ICE Candidate added');
-                } catch (iceErr) {
-                  console.log('   ⚠️ Failed to add queued ICE candidate:', iceErr.message);
+                } catch {
+                  // Candidate no longer valid for the negotiated connection — safe to skip.
                 }
               }
               pendingIceCandidatesRef.current = [];
             }
-            
+
             try {
               await deleteSignalMutation.mutateAsync(signal.id);
-              console.log('   ✅ Signal deleted from DB');
-            } catch (deleteErr) {
-              console.log('   ⚠️ Could not delete signal (may already be deleted):', deleteErr.message);
+            } catch {
+              // Already deleted by the other side's processing — fine.
             }
           } else if (signal.signal_type === 'offer') {
             // Skip if we've already set remote description (we've already processed an offer)
             if (remoteDescriptionSetRef.current) {
-              console.log('📥 [VideoCall] OFFER received but remote description already set - skipping');
               try {
                 await deleteSignalMutation.mutateAsync(signal.id);
-              } catch (deleteErr) {
-                console.log('   ⚠️ Could not delete signal:', deleteErr.message);
+              } catch {
+                // Already deleted — fine.
               }
               continue;
             }
-            
-            console.log('📥 [VideoCall] OFFER received from peer');
-            console.log('   Current signaling state:', peerConnectionRef.current.signalingState);
-            console.log('   Setting remote description...');
+
             await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(data));
             remoteDescriptionSetRef.current = true;
-            console.log('   ✅ Remote description set');
-            console.log('   New signaling state:', peerConnectionRef.current.signalingState);
-            
+
             // Process any pending ICE candidates BEFORE creating answer
             if (pendingIceCandidatesRef.current.length > 0) {
-              console.log(`   🧊 Processing ${pendingIceCandidatesRef.current.length} queued ICE candidates...`);
               for (const candidate of pendingIceCandidatesRef.current) {
                 try {
                   await peerConnectionRef.current.addIceCandidate(new RTCIceCandidate(candidate));
-                  console.log('   ✅ Queued ICE Candidate added');
-                } catch (iceErr) {
-                  console.log('   ⚠️ Failed to add queued ICE candidate:', iceErr.message);
+                } catch {
+                  // Candidate no longer valid for the negotiated connection — safe to skip.
                 }
               }
               pendingIceCandidatesRef.current = [];
             }
-            
-            console.log('   Creating ANSWER...');
+
             try {
               const answer = await peerConnectionRef.current.createAnswer();
               await peerConnectionRef.current.setLocalDescription(answer);
-              console.log('   📤 Sending ANSWER signal');
               await sendSignalMutation.mutateAsync({
                 signal_type: 'answer',
                 signal_data: answer
               });
-              console.log('   ✅ ANSWER sent successfully');
             } catch (answerErr) {
               console.error('   ❌ ERROR creating/sending ANSWER:', answerErr);
-              console.error('      Error message:', answerErr.message);
-              console.error('      Error stack:', answerErr.stack);
             }
             try {
               await deleteSignalMutation.mutateAsync(signal.id);
-              console.log('   ✅ Signal deleted from DB');
-            } catch (deleteErr) {
-              console.log('   ⚠️ Could not delete signal (may already be deleted):', deleteErr.message);
+            } catch {
+              // Already deleted — fine.
             }
           } else if (signal.signal_type === 'ice-candidate') {
             // Queue ICE candidates if remote description not yet set
             if (!remoteDescriptionSetRef.current) {
-              console.log('❄️ [VideoCall] ICE Candidate received (QUEUED - waiting for remote description)', {
-                protocol: data.protocol,
-                address: data.candidate?.split(' ')[4] || 'unknown'
-              });
               pendingIceCandidatesRef.current.push(data);
               // Still delete from DB to prevent re-processing
               try {
                 await deleteSignalMutation.mutateAsync(signal.id);
-              } catch (deleteErr) {
-                console.log('   ⚠️ Could not delete signal:', deleteErr.message);
+              } catch {
+                // Already deleted — fine.
               }
               continue;
             }
-            
-            console.log('❄️ [VideoCall] ICE Candidate received', {
-              protocol: data.protocol,
-              address: data.candidate?.split(' ')[4] || 'unknown'
-            });
+
             try {
               await peerConnectionRef.current.addIceCandidate(new RTCIceCandidate(data));
-              console.log('   ✅ ICE Candidate added');
-            } catch (iceErr) {
-              console.log('   ⚠️ Failed to add ICE candidate:', iceErr.message);
+            } catch {
+              // Candidate no longer valid for the negotiated connection — safe to skip.
             }
             try {
               await deleteSignalMutation.mutateAsync(signal.id);
-            } catch (deleteErr) {
-              console.log('   ⚠️ Could not delete signal:', deleteErr.message);
+            } catch {
+              // Already deleted — fine.
             }
           } else if (signal.signal_type === 'end-call') {
-            console.log('🔴 [VideoCall] END-CALL signal received');
             setCallStatus('ended');
             try {
               await deleteSignalMutation.mutateAsync(signal.id);
-            } catch (deleteErr) {
-              console.log('   ⚠️ Could not delete signal:', deleteErr.message);
+            } catch {
+              // Already deleted — fine.
             }
           } else if (signal.signal_type === 'decline') {
-            console.log('❌ [VideoCall] DECLINE signal received');
             toast.error('Call declined');
             setCallStatus('ended');
             try {
               await deleteSignalMutation.mutateAsync(signal.id);
-            } catch (deleteErr) {
-              console.log('   ⚠️ Could not delete signal:', deleteErr.message);
+            } catch {
+              // Already deleted — fine.
             }
           }
         } catch (error) {
           console.error('❌ [VideoCall] Error processing signal:', error);
-          console.error('   Signal details:', {
-            type: signal.signal_type,
-            from: signal.from_email,
-            callId: signal.call_id
-          });
         }
       }
     };
 
     processSignals();
-  }, [signals, peerConnectionReady]);
+  }, [combinedSignals, peerConnectionReady]);
 
   const toggleVideo = () => {
     if (localStreamRef.current) {
@@ -606,7 +547,6 @@ export default function VideoCall() {
       if (videoTrack) {
         videoTrack.enabled = !videoTrack.enabled;
         setIsVideoEnabled(videoTrack.enabled);
-        console.log(`🎥 [VideoCall] Video ${videoTrack.enabled ? 'enabled' : 'disabled'}`);
       }
     }
   };
@@ -616,7 +556,6 @@ export default function VideoCall() {
 
     const nextFacingMode = cameraFacingMode === 'user' ? 'environment' : 'user';
     try {
-      console.log('🎤 [VideoCall] Switching camera...', { nextFacingMode });
       const cameraStream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: { ideal: nextFacingMode } }
       });
@@ -630,7 +569,6 @@ export default function VideoCall() {
         const sender = pc.getSenders().find((s) => s.track?.kind === 'video');
         if (sender) {
           await sender.replaceTrack(newVideoTrack);
-          console.log('✅ [VideoCall] Replaced video track on peer connection');
         }
       }
 
@@ -660,26 +598,23 @@ export default function VideoCall() {
       if (audioTrack) {
         audioTrack.enabled = !audioTrack.enabled;
         setIsAudioEnabled(audioTrack.enabled);
-        console.log(`🎤 [VideoCall] Audio ${audioTrack.enabled ? 'enabled' : 'disabled'}`);
       }
     }
   };
 
   const endCall = async () => {
-    console.log('📞 [VideoCall] Ending call...');
     await sendSignalMutation.mutateAsync({
       signal_type: 'end-call',
       signal_data: {}
     });
-    console.log('📤 [VideoCall] END-CALL signal sent');
     setCallStatus('ended');
-    
+
     // Stop ringing sound
     if (ringingAudioRef.current) {
       ringingAudioRef.current.pause();
       ringingAudioRef.current.currentTime = 0;
     }
-    
+
     // Only delete signals addressed TO the current user — do NOT delete the end-call
     // signal sent to the other party, as they may not have polled yet.
     try {
@@ -687,18 +622,17 @@ export default function VideoCall() {
         call_id: callId,
         to_email: user.email
       });
-      console.log(`🧹 [VideoCall] Cleaning up ${myReceivedSignals.length} signal(s) addressed to me for call ${callId}`);
       for (const signal of myReceivedSignals) {
         try {
           await base44.entities.VideoSignal.delete(signal.id);
-        } catch (err) {
-          console.log('Failed to delete signal:', err.message);
+        } catch {
+          // Already deleted — fine.
         }
       }
     } catch (err) {
-      console.log('Error cleaning up call signals:', err.message);
+      console.warn('Error cleaning up call signals:', err.message);
     }
-    
+
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach((track) => track.stop());
     }
@@ -725,7 +659,7 @@ export default function VideoCall() {
       <audio ref={ringingAudioRef} loop>
         <source src="https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3" type="audio/mpeg" />
       </audio>
-      
+
       {/* Header */}
       <header className="bg-slate-800/80 backdrop-blur-lg border-b border-slate-700 flex-shrink-0 z-10">
         <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">

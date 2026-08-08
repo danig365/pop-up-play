@@ -36,7 +36,6 @@ export default function Broadcast() {
 
   const sendBroadcastMutation = useMutation({
     mutationFn: async ({ subject, message }) => {
-      console.log('📢 [Broadcast] Sending broadcast with subject:', subject);
       const { getApiBaseUrl } = await import('@/lib/apiUrl');
       
       const response = await fetch(`${getApiBaseUrl()}/broadcast/send`, {
@@ -54,13 +53,11 @@ export default function Broadcast() {
       }
 
       const data = await response.json();
-      console.log('📢 [Broadcast] Broadcast response:', data);
-      
+
       return data.data;
     },
     onSuccess: (data) => {
-      console.log('📢 [Broadcast] Success! Data:', data);
-      const message = data.emails_sent !== undefined 
+      const message = data.emails_sent !== undefined
         ? `Broadcast sent to ${data.recipients} users! Emails sent: ${data.emails_sent}`
         : `Broadcast sent to ${data.recipients} users!`;
       toast.success(message);

@@ -37,8 +37,7 @@ export default function EnterAccessCode() {
   const redeemMutation = useMutation({
     mutationFn: async (codeValue) => {
       const codeStr = String(codeValue).trim().toUpperCase();
-      console.log('🔑 [EnterAccessCode] Attempting to redeem code via secure endpoint:', codeStr);
-      
+
       // Use the dedicated secure redeem endpoint instead of direct entity access
       const response = await fetch(`${getApiBaseUrl()}/access-code/redeem`, {
         method: 'POST',
@@ -55,7 +54,6 @@ export default function EnterAccessCode() {
         throw new Error(result.error || 'Failed to redeem code');
       }
 
-      console.log('🔑 [EnterAccessCode] Code redeemed successfully:', result);
       return result;
     },
     onSuccess: (data) => {

@@ -11,6 +11,7 @@ import { isRequiredProfileComplete } from '@/lib/profileCompletion';
 import { createPageUrl } from '@/utils';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { getApiBaseUrl } from '@/lib/apiUrl';
+import { connectVideoSignalSocket, disconnectVideoSignalSocket } from '@/lib/videoSignalSocket';
 
 function FullPageLoader() {
   return (
@@ -125,6 +126,15 @@ export default function Layout({ children, currentPageName }) {
     ping();
     const interval = setInterval(ping, 30000);
     return () => clearInterval(interval);
+  }, [userEmail]);
+
+  // One shared socket per tab for real-time VideoSignal push (see
+  // src/lib/videoSignalSocket.js) — IncomingCallDetector and VideoCall both
+  // read from this instead of each opening their own connection.
+  useEffect(() => {
+    if (!userEmail) return;
+    connectVideoSignalSocket();
+    return () => disconnectVideoSignalSocket();
   }, [userEmail]);
 
   // 3-tier access control:

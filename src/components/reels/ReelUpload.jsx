@@ -60,9 +60,6 @@ export default function ReelUpload({ onUploadComplete, onClose }) {
         caption: caption.trim() || null,
         duration
       };
-      // Debug: Log all data sent to backend
-      console.log('[DEBUG ReelUpload] Attempting to create reel with data:', reelData);
-
       // Create reel record
       await base44.entities.Reel.create(reelData);
 

@@ -281,14 +281,10 @@ export default function Menu() {
             if (item.action === 'logout') {
               return (
                 <div key="logout" onClick={async () => {
-                  console.log('🔄 [Menu.logout] Logout clicked');
                   try {
-                    console.log('🔄 [Menu.logout] Calling base44.auth.logout()...');
                     await base44.auth.logout();
-                    console.log('✅ [Menu.logout] Logout completed');
                   } catch (error) {
                     console.error('❌ [Menu.logout] Logout failed:', error);
-                    console.log('🔄 [Menu.logout] Forcing redirect...');
                     window.location.href = window.location.origin;
                   }
                 }}>
